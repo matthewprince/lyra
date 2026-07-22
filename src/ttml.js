@@ -127,8 +127,12 @@
     var xml = String(source || "").replace(/^﻿/, "");
     var doc = new DOMParser().parseFromString(xml, "text/xml");
     if (doc.getElementsByTagName("parsererror").length) {
-      // one repair pass for stray & etc, then give up
+      // repair passes: stray &, then TTML that arrived inside a JSON string
+      // (escaped quotes), then give up
       doc = new DOMParser().parseFromString(xml.replace(/&(?!#?\w+;)/g, "&amp;"), "text/xml");
+      if (doc.getElementsByTagName("parsererror").length && xml.indexOf('\\"') !== -1) {
+        doc = new DOMParser().parseFromString(xml.replace(/\\"/g, '"').replace(/&(?!#?\w+;)/g, "&amp;"), "text/xml");
+      }
       if (doc.getElementsByTagName("parsererror").length) return null;
     }
     var tt = doc.documentElement;
@@ -138,17 +142,25 @@
     var body = elementsByLocal(tt, "body")[0];
     if (!body) return null;
 
-    // duets: any agent that isn't the first declared one goes right-aligned
-    var agents = [];
+    // duets: any agent that isn't the first declared one goes right-aligned,
+    // except group/choir agents (type=group, conventionally v1000) which center
+    var agents = [], agentType = {};
     var head = elementsByLocal(tt, "head")[0];
     if (head) {
       var ags = elementsByLocal(head, "agent");
       for (var a = 0; a < ags.length; a++) {
         var id = attr(ags[a], "id");
-        if (id) agents.push(id);
+        if (!id) continue;
+        agents.push(id);
+        agentType[id] = (attr(ags[a], "type") || "").toLowerCase();
       }
     }
     var primaryAgent = agents.length ? agents[0] : null;
+    function alignFor(agent) {
+      if (!agent) return "start";
+      if (agentType[agent] === "group" || agent === "v1000") return "center";
+      return primaryAgent && agent !== primaryAgent ? "end" : "start";
+    }
 
     var songwriters = [];
     if (head) {
@@ -193,7 +205,7 @@
         start: pBegin != null ? pBegin : 0,
         end: pEnd != null ? pEnd : 0,
         text: "",
-        align: agent && primaryAgent && agent !== primaryAgent ? "end" : "start",
+        align: alignFor(agent),
         agent: agent || null,
         songPart: songPart || null,
         key: attr(p, "key"),
@@ -326,19 +338,25 @@
   // LRC + enhanced LRC (<mm:ss.xx> word stamps)
   Lyra.fromLRC = function (text) {
     var rows = String(text || "").split(/\r?\n/), lines = [], anyWords = false;
+    // [offset:+300] ID tag: MILLISECONDS, positive shifts lyrics earlier
+    var offsetMs = 0;
+    for (var o = 0; o < rows.length; o++) {
+      var om = rows[o].match(/^\s*\[offset:\s*([+-]?\d+)\s*\]/i);
+      if (om) { offsetMs = parseInt(om[1], 10) || 0; break; }
+    }
     for (var i = 0; i < rows.length; i++) {
       var m = rows[i].match(/^\s*((?:\[\d+:\d+(?:\.\d+)?\])+)(.*)$/);
       if (!m) continue;
       var stamps = m[1].match(/\[(\d+):(\d+(?:\.\d+)?)\]/g).map(function (st) {
         var p = st.match(/\[(\d+):(\d+(?:\.\d+)?)\]/);
-        return (parseInt(p[1], 10) * 60 + parseFloat(p[2])) * 1000;
+        return Math.max(0, (parseInt(p[1], 10) * 60 + parseFloat(p[2])) * 1000 - offsetMs);
       });
       var bodyTxt = m[2];
       var words = [];
       var lead = normText(bodyTxt.split(/<\d+:\d+(?:\.\d+)?>/)[0]);
       var wm, wre = /<(\d+):(\d+(?:\.\d+)?)>([^<]*)/g;
       while ((wm = wre.exec(bodyTxt))) {
-        var ws = (parseInt(wm[1], 10) * 60 + parseFloat(wm[2])) * 1000;
+        var ws = Math.max(0, (parseInt(wm[1], 10) * 60 + parseFloat(wm[2])) * 1000 - offsetMs);
         var wt = normText(wm[3]);
         if (!wt) continue;
         words.push({ start: ws, end: 0, text: wt, syllables: [{ start: ws, end: 0, text: wt }] });
@@ -375,6 +393,17 @@
     var s = String(input).replace(/^﻿/, "").trim();
     if (s[0] === "<") return Lyra.parseTTML(s);
     if (s[0] === "{") { try { return Lyra.fromLyricsJSON(JSON.parse(s)); } catch (e) { return null; } }
-    return Lyra.fromLRC(s);
+    var lrc = Lyra.fromLRC(s);
+    if (lrc) return lrc;
+    // plain unsynced text: render as a static sheet
+    var rows = s.split(/\r?\n/).map(normText).filter(Boolean);
+    if (!rows.length) return null;
+    return {
+      timing: "none", duration: 0, songwriters: [],
+      lines: rows.map(function (t2) {
+        return { kind: "line", start: 0, end: 0, text: t2, align: "start",
+                 agent: null, songPart: null, key: null, words: [], background: [] };
+      }),
+    };
   };
 })(typeof window !== "undefined" ? window : globalThis);

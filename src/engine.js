@@ -33,10 +33,18 @@
     adaptiveSpring: true,   // weightier spring on slow songs, snappier on fast ones
     entrance: true,         // staggered ripple-in on load and after seeks
     userK: 430,             // user-scroll spring stiffness (critically damped)
-    userIdleMs: 3200,       // resume auto-follow after this much scroll idle
+    userIdleMs: 15000,      // resume auto-follow after this much scroll idle (3s was
+                            // shorter than actually reading the verse you scrolled to)
+    timingOffsetMs: 110,    // perceptual lead: highlights land slightly before nominal
+                            // time (real audio stacks have output latency; the eye
+                            // wants to arrive before the sound)
+    scrollLeadMs: 450,      // scroll runs on a clock this far AHEAD of the highlight:
+                            // the view arrives, THEN the line lights up
     graceMs: 350,           // hold a line active this long past its end
     interludeMinMs: 2600,   // min silent gap that earns interlude dots
     interludeLeadMs: 4000,  // dots before the first line if it starts later than this
+    lineRipple: true,       // line-timed tracks: synthesize a word stagger so lines
+                            // type in word-by-word instead of flipping on at once
     fontFamily: null,
     background: true,       // drive Lyra.Background if present
     closeButton: true,      // rendered when onClose is provided; set false to suppress
@@ -46,7 +54,12 @@
   var CSS = "" +
 // registered => per-frame writes cost microseconds instead of a recalc storm
 "@property --fill{syntax:'<percentage>';inherits:false;initial-value:0%;}" +
-".lyra-root{position:absolute;inset:0;overflow:hidden;color:#fff;-webkit-font-smoothing:antialiased;contain:layout style;touch-action:none;}" +
+// theming: --lyra-text is the master knob; everything derives from it with
+// today's values as fallbacks (relative color syntax, chromium 119+)
+".lyra-root{--lyra-text:#fff;--lyra-sung:var(--lyra-text);" +
+"--lyra-unsung:rgb(from var(--lyra-text) r g b / .34);" +
+"--lyra-dim:rgb(from var(--lyra-text) r g b / .92);" +
+"position:absolute;inset:0;overflow:hidden;color:var(--lyra-text);-webkit-font-smoothing:antialiased;contain:layout style;touch-action:none;}" +
 ".lyra-viewport{position:absolute;inset:0;overflow:hidden;}" +
 ".lyra-canvas{position:absolute;left:0;right:0;top:0;will-change:translate;}" +
 ".lyra-content{padding:0 clamp(24px,5.5vw,88px);box-sizing:border-box;max-width:min(1160px,94%);margin:0 auto;}" +
@@ -60,15 +73,21 @@
 "@keyframes lyra-in{from{opacity:0;translate:0 16px;}}" + // to-frame omitted: animates to each line's own styles
 ".lyra-enter{animation:lyra-in .55s cubic-bezier(.2,.55,.25,1) backwards;}" +
 ".lyra-line.lyra-opp{text-align:end;transform-origin:right center;}" +
+".lyra-line.lyra-center{text-align:center;transform-origin:center center;}" + // group/choir agents (v1000)
+".lyra-line:dir(rtl){transform-origin:right center;}" +
 ".lyra-near,.lyra-lag{will-change:translate;}" +
 ".lyra-line.lyra-active{opacity:1;scale:1.03;transition-duration:.28s,.5s;}" +
 ".lyra-line:hover{opacity:.72;filter:none!important;}" +
 ".lyra-line.lyra-active:hover{opacity:1;}" +
-// depth-of-field tiers
+// depth-of-field tiers. asymmetric on purpose: sung history above recedes hard,
+// upcoming lines below stay readable for read-ahead
 ".lyra-d1{opacity:.5;}.lyra-d2{opacity:.42;}.lyra-d3{opacity:.36;}.lyra-d4{opacity:.30;}" +
+".lyra-b1{opacity:.62;}.lyra-b2{opacity:.54;}.lyra-b3{opacity:.46;}.lyra-b4{opacity:.40;}" +
 ".lyra-blur .lyra-line{filter:blur(3.5px);}.lyra-blur .lyra-line.lyra-active{filter:none;}" +
 ".lyra-blur .lyra-d1{filter:blur(1px);}.lyra-blur .lyra-d2{filter:blur(1.8px);}" +
 ".lyra-blur .lyra-d3{filter:blur(2.6px);}.lyra-blur .lyra-d4{filter:blur(3.5px);}" +
+".lyra-blur .lyra-b1{filter:none;}.lyra-blur .lyra-b2{filter:blur(1px);}" +
+".lyra-blur .lyra-b3{filter:blur(1.6px);}.lyra-blur .lyra-b4{filter:blur(2.2px);}" +
 // words are plain containers, the paint tricks live on syllables. NO transitions on
 // word lift - it's a per-frame envelope from the engine. transition pops looked like
 // a pogo stick on gapless tracks (Alone Pt. II, ~4 words/s contiguous).
@@ -77,14 +96,17 @@
 // scale back on these - the old 1.09 hold swell grew long words ~10px sideways
 // and glued them to their neighbors ("thatsomeone"). swell lives in the envelope now.
 ".lyra-s,.lyra-gs{display:inline-block;}" +
-".lyra-line .lyra-s{color:rgba(255,255,255,.92);}" +
+".lyra-line .lyra-s{color:var(--lyra-dim,rgba(255,255,255,.92));}" +
 ".lyra-line.lyra-active .lyra-s{color:var(--lyra-unsung,rgba(255,255,255,.34));}" +
 ".lyra-line.lyra-active .lyra-w-sung .lyra-s,.lyra-line.lyra-active .lyra-s.lyra-s-sung{color:var(--lyra-sung,#fff);}" +
 ".lyra-line.lyra-active .lyra-s.lyra-s-cur{" +
 "background-image:linear-gradient(90deg,var(--lyra-sung,#fff) calc(var(--fill) - 18%),var(--lyra-unsung,rgba(255,255,255,.34)) var(--fill));" +
 "-webkit-background-clip:text;background-clip:text;color:transparent;}" +
-// line-timed tracks have no sweep: the active line simply reads bright
-".lyra-linemode .lyra-line.lyra-active .lyra-s{color:var(--lyra-sung,#fff);}" +
+// RTL sweeps travel right-to-left (pairs with dir=auto on lines)
+".lyra-line:dir(rtl) .lyra-s.lyra-s-cur{" +
+"background-image:linear-gradient(270deg,var(--lyra-sung,#fff) calc(var(--fill) - 18%),var(--lyra-unsung,rgba(255,255,255,.34)) var(--fill));}" +
+// static sheets (unsynced lyrics): a plain readable list, no states
+".lyra-static .lyra-line{opacity:.85;scale:1;filter:none!important;cursor:default;}" +
 // glow overlay = duplicate glyphs clipped to the sung part, static drop-shadow,
 // only opacity moves
 ".lyra-wg{position:absolute;inset:0;pointer-events:none;opacity:0;" + // opacity driven by the lift envelope
@@ -95,10 +117,12 @@
 // the envelope-driven opacity alone. gating them meant the glow vanished the
 // instant a word's classes flipped, mid-fade (boidu caught this from a video)
 ".lyra-gs{color:transparent;}" +
-".lyra-w-sung .lyra-gs,.lyra-gs.lyra-s-sung{color:#fff;}" +
+".lyra-w-sung .lyra-gs,.lyra-gs.lyra-s-sung{color:var(--lyra-sung,#fff);}" +
 ".lyra-gs.lyra-s-cur{" +
-"background-image:linear-gradient(90deg,#fff calc(var(--fill) - 18%),transparent var(--fill));" +
+"background-image:linear-gradient(90deg,var(--lyra-sung,#fff) calc(var(--fill) - 18%),transparent var(--fill));" +
 "-webkit-background-clip:text;background-clip:text;}" +
+".lyra-line:dir(rtl) .lyra-gs.lyra-s-cur{" +
+"background-image:linear-gradient(270deg,var(--lyra-sung,#fff) calc(var(--fill) - 18%),transparent var(--fill));}" +
 // background vocals: smaller echo line under the lead
 ".lyra-bgv{display:block;font-size:.58em;font-weight:600;opacity:.8;margin-top:.15em;}" +
 // interlude dots
@@ -123,6 +147,14 @@
 "backdrop-filter:blur(8px);transition:background .15s,scale .12s;}" +
 ".lyra-close:hover{background:rgba(255,255,255,.2);scale:1.08;}" +
 ".lyra-close svg{width:17px;height:17px;stroke:currentColor;stroke-width:2.4;fill:none;stroke-linecap:round;}" +
+// resume-autoscroll pill, shown while the user is browsing away from the song
+".lyra-resume{position:absolute;bottom:22px;left:50%;translate:-50% 0;z-index:6;border:0;border-radius:999px;" +
+"padding:9px 18px;font-size:14px;font-weight:600;font-family:inherit;color:var(--lyra-text,#fff);cursor:pointer;" +
+"background:rgba(255,255,255,.1);backdrop-filter:blur(10px);opacity:0;pointer-events:none;" +
+"transition:opacity .2s ease,translate .25s cubic-bezier(.3,.7,.25,1.1);}" +
+".lyra-resume.lyra-resume-on{opacity:1;pointer-events:auto;}" +
+".lyra-resume:not(.lyra-resume-on){translate:-50% 12px;}" +
+".lyra-resume:hover{background:rgba(255,255,255,.2);}" +
 // snap mode: kills every transition for the resync frame(s)
 ".lyra-cut .lyra-line,.lyra-cut .lyra-w,.lyra-cut .lyra-wg,.lyra-cut .lyra-s,.lyra-cut .lyra-gs,.lyra-cut .lyra-int{transition:none!important;}" +
 "@media (prefers-reduced-motion:reduce){" +
@@ -160,6 +192,9 @@
     var destroyed = false, running = false;
     var raf = null;
     var anchor = -1;             // active item index
+    var scrollAnchor = -1;       // like anchor, but on the LEADING clock (pos + scrollLeadMs)
+    var staticMode = false;      // unsynced lyrics: plain sheet, no states/follow
+    var resumeEl = null, resumeShown = false;
     var marked = [];             // items currently carrying distance/near classes
     var vh = 0, maxScroll = 0, measured = false, measureQueued = false;
     var ro = null;
@@ -168,6 +203,7 @@
     var spr = { y: 0, v: 0, target: 0, settled: true };
     var adaptedK = S.followK;   // tempo-adapted stiffness
     var lastAnchorT = 0, cadence = [];   // recent inter-line intervals (ms)
+    var lastFramePos = 0;
     var hist = [];               // [{t, y}] recent container positions
     var lagged = [];             // items currently replaying delayed history
     var userUntil = 0;           // auto-follow paused until this timestamp
@@ -203,6 +239,14 @@
         btn.addEventListener("click", function (e) { e.stopPropagation(); try { onClose(); } catch (x) {} });
         root.appendChild(btn);
       }
+      resumeEl = el("button", "lyra-resume");
+      resumeEl.type = "button";
+      resumeEl.textContent = "Resume";
+      resumeEl.addEventListener("click", function () {
+        userUntil = 0;
+        retarget(false);
+      });
+      root.appendChild(resumeEl);
       mount.appendChild(root);
       if (S.background && Lyra.Background) { try { bg = Lyra.Background.attach(root); } catch (e) { bg = null; } }
       if (bg && pendingCover) { try { bg.setCover(pendingCover[0], pendingCover[1]); } catch (e) {} pendingCover = null; }
@@ -284,7 +328,8 @@
 
       var lines = (model && model.lines) || [];
       var wordMode = model && model.timing === "word";
-      root.classList.toggle("lyra-linemode", !wordMode);
+      staticMode = !!(model && model.timing === "none");
+      root.classList.toggle("lyra-static", staticMode);
       var prevEnd = 0;
 
       for (var i = 0; i < lines.length; i++) {
@@ -306,8 +351,19 @@
         var meta = { kind: "line", el: le, start: ln.start, end: ln.end, text: ln.text,
                      words: [], bgGroups: [], natY: 0, natH: 0, _state: -1, _dist: null,
                      lagDelay: 0, lagY: null };
+        if (ln.align === "center") le.classList.add("lyra-center");
         if (wordMode && ln.words && ln.words.length) {
           meta.words = buildWordRow(le, ln.words, S.glow);
+        } else if (!staticMode && S.lineRipple && ln.text) {
+          // line-timed: synthesize a small per-word stagger so the line types in
+          // word by word through the normal envelope instead of flipping at once
+          var toks = ln.text.split(" ");
+          var step = Math.min(60, (ln.end - ln.start) * 0.5 / Math.max(1, toks.length));
+          var synth = toks.map(function (t2, ti) {
+            var st2 = ln.start + ti * step;
+            return { start: st2, end: st2 + 170, text: t2, syllables: [{ start: st2, end: st2 + 170, text: t2 }] };
+          });
+          meta.words = buildWordRow(le, synth, S.glow);
         } else {
           var w = el("span", "lyra-w");
           var ws = el("span", "lyra-s");
@@ -328,6 +384,13 @@
         content.appendChild(le);
         items.push(meta);
         prevEnd = Math.max(prevEnd, meta.end);
+      }
+
+      // outro: dots through a long instrumental tail when the duration says there is one
+      if (!staticMode && model && model.duration - prevEnd >= S.interludeMinMs + 1500) {
+        var outro = buildInterlude(prevEnd + 300, model.duration - 400, false);
+        content.appendChild(outro.el);
+        items.push(outro);
       }
 
       if (S.entrance && !reduced) {
@@ -392,9 +455,16 @@
       return clamp(m.natY + m.natH / 2 - vh * S.centerBias, 0, maxScroll);
     }
     function retarget(instant) {
-      if (anchor < 0 || !measured) return;
+      if (scrollAnchor < 0 || !measured) return;
       if (!instant && performance.now() < userUntil) return; // the user is browsing: don't yank the view
-      var t = targetFor(anchor);
+      var t = targetFor(scrollAnchor);
+      // keep still-active earlier lines (duet partners) on screen, unless they're
+      // about to expire anyway
+      for (var d2 = Math.max(0, anchor - 3); d2 >= 0 && d2 < anchor; d2++) {
+        var pm = items[d2];
+        if (pm && pm._state === 1 && pm.end - lastFramePos > 500) t = Math.min(t, pm.natY);
+      }
+      t = clamp(t, 0, maxScroll);
       if (t === spr.target && !instant) return;
       spr.target = t;
       spr.settled = false;
@@ -418,10 +488,10 @@
       for (var j = lagged.length - 1; j >= 0; j--) clearLag(lagged[j]);
       lagged.length = 0;
       if (S.cascade && !document.hidden) {
-        for (var i = anchor + 1; i < items.length; i++) {
+        for (var i = scrollAnchor + 1; i < items.length; i++) {
           var m = items[i];
           if (m.natY > spr.target + vh * 1.3) break;
-          m.lagDelay = Math.min((i - anchor) * S.cascadeStep, S.cascadeMax);
+          m.lagDelay = Math.min((i - scrollAnchor) * S.cascadeStep, S.cascadeMax);
           if (m.lagDelay > 0) { lagged.push(m); m.el.classList.add("lyra-lag"); } // promoted for exactly the cascade window
         }
       }
@@ -459,6 +529,10 @@
     }
     function stepScroll(now, dtMs) {
       var userMode = now < userUntil;
+      if (resumeEl && userMode !== resumeShown && !staticMode) {
+        resumeShown = userMode;
+        resumeEl.classList.toggle("lyra-resume-on", userMode);
+      }
       var k = userMode ? S.userK : adaptedK;
       var zeta = userMode ? 1 : S.followZeta;
       if (!spr.settled) {
@@ -531,6 +605,7 @@
       root.removeEventListener("pointercancel", onPointerUp);
     }
     function onLineClick(e) {
+      if (staticMode) return; // unsynced sheet: clicks can't seek anywhere meaningful
       var t = e.target;
       while (t && t !== content && !t._lyra) t = t.parentNode;
       if (t && t._lyra) {
@@ -560,7 +635,8 @@
         if (i === anchor) { setDist(items[i], null); }
         else {
           var d = Math.min(4, Math.abs(i - anchor));
-          setDist(items[i], "lyra-d" + d);
+          // above = sung history, recedes hard; below = read-ahead, stays legible
+          setDist(items[i], (i < anchor ? "lyra-d" : "lyra-b") + d);
         }
         var near = i >= anchor - 2 && i <= anchor + 4;
         items[i].el.classList.toggle("lyra-near", near);
@@ -742,25 +818,36 @@
           else if (pos >= sy.end) ss = 2;
           else { ss = pos < sy.start ? 0 : 1; sPlay = true; }
           setSylState(sy, ss);
-          if (ss === 1) setSylFill(sy, ((pos - sy.start) / Math.max(1, sy.end - sy.start)) * 100);
+          // 118 not 100: the soft edge (18% wide) fully clears the glyph right as
+          // the state flips to sung, so the edge exits instead of popping away
+          if (ss === 1) setSylFill(sy, ((pos - sy.start) / Math.max(1, sy.end - sy.start)) * 118);
         }
       }
     }
 
     // the frame
-    function findAnchor(pos) {
-      var a = anchor < 0 ? -1 : anchor;
+    function findIdx(pos, seed) {
+      var a = seed < 0 ? -1 : seed;
       if (a >= items.length) a = items.length - 1;
       while (a + 1 < items.length && items[a + 1].start <= pos) a++;
       while (a >= 0 && items[a].start > pos) a--;
       return a;
     }
+    function findAnchor(pos) { return findIdx(pos, anchor); }
 
     function frame(pos, now, dtMs) {
       now = now == null ? performance.now() : now;
       frameNow = now;
       var t0 = performance.now();
       if (!items.length || !root) return;
+      pos += S.timingOffsetMs; // perceptual lead (see DEFAULTS)
+      lastFramePos = pos;
+
+      if (staticMode) { // unsynced sheet: user scrolling only
+        if (measured) stepScroll(now, dtMs == null ? 16.7 : dtMs);
+        stat.frames++;
+        return;
+      }
 
       var a = findAnchor(pos);
       if (a !== anchor) {
@@ -775,7 +862,7 @@
           setState(i, st);
         }
         applyDistances();
-        if (a >= 0 && prev !== a) retarget(false);
+        if (prev === -2) scrollAnchor = -2; // resync pass: rescan the scroll clock too
       } else if (a >= 0) {
         // keep overlapping earlier lines fresh (duet partner expiring mid-anchor)
         for (var k2 = Math.max(0, a - 3); k2 < a; k2++) {
@@ -802,6 +889,15 @@
         }
       }
       stepCooling(now);
+
+      // scroll decisions run on a LEADING clock: the view starts moving before
+      // the next line lights up, so the eye waits for the vocal instead of
+      // chasing it
+      var sa = findIdx(pos + S.scrollLeadMs, scrollAnchor);
+      if (sa !== scrollAnchor) {
+        scrollAnchor = sa;
+        if (sa >= 0) retarget(false);
+      }
 
       // scroll-idle expired: glide back even if no line change comes for a while
       if (userUntil && now >= userUntil) { userUntil = 0; retarget(false); }
@@ -924,7 +1020,7 @@
       document.removeEventListener("visibilitychange", onVisibility);
       if (bg && bg.destroy) { try { bg.destroy(); } catch (e) {} }
       if (root && root.parentNode) root.parentNode.removeChild(root);
-      root = viewport = canvas = content = null;
+      root = viewport = canvas = content = resumeEl = null;
       items = []; lagged = []; marked = []; cooling = [];
     }
 
@@ -938,6 +1034,7 @@
       status: status,
       remeasure: queueMeasure,
       setCover: function (url, accent) { if (bg && bg.setCover) bg.setCover(url, accent); else pendingCover = [url, accent]; },
+      setOffset: function (ms) { S.timingOffsetMs = ms | 0; },
       stats: function () { return { frames: stat.frames, styleWrites: stat.styleWrites, lastMs: stat.lastMs, worstMs: stat.worstMs, items: items.length, anchor: anchor }; },
       get settings() { return S; },
       get lineCount() { return items.length; },

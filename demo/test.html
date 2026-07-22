@@ -115,6 +115,28 @@
   t("prefixed spans in wrapper still word-timed", px && px.timing === "word" && px.lines[0].words.length === 1 && px.lines[0].words[0].text === "prefixed",
     px && JSON.stringify(px.lines[0].words));
 
+  // braccato-study adoptions
+  var GA = '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word">' +
+    '<head><metadata><ttm:agent type="person" xml:id="v1"/><ttm:agent type="person" xml:id="v2"/><ttm:agent type="group" xml:id="v1000"/></metadata></head><body>' +
+    '<p begin="1s" end="2s" ttm:agent="v1"><span begin="1s" end="2s">lead</span></p>' +
+    '<p begin="3s" end="4s" ttm:agent="v2"><span begin="3s" end="4s">reply</span></p>' +
+    '<p begin="5s" end="6s" ttm:agent="v1000"><span begin="5s" end="6s">both</span></p>' +
+    '</body></tt>';
+  var ga = Lyra.parseTTML(GA);
+  t("group agent centers", ga.lines[2].align === "center" && ga.lines[1].align === "end" && ga.lines[0].align === "start",
+    JSON.stringify(ga.lines.map(function (l) { return l.align; })));
+
+  var EQ = '<tt xmlns=\\"http://www.w3.org/ns/ttml\\"><body><p begin=\\"5s\\" end=\\"8s\\">escaped</p></body></tt>';
+  var eq2 = Lyra.parseTTML(EQ);
+  t("JSON-escaped TTML repaired", !!eq2 && eq2.lines[0].text === "escaped", eq2 && eq2.lines[0].text);
+
+  var OF = Lyra.fromLRC("[offset:+500]\n[00:10.00]shifted line\n[00:14.00]second");
+  t("LRC offset tag applied (ms, earlier)", OF.lines[0].start === 9500, OF.lines[0].start);
+
+  var PL = Lyra.parse("just some words\nwith no timestamps at all");
+  t("plain text falls back to static sheet", !!PL && PL.timing === "none" && PL.lines.length === 2,
+    PL && JSON.stringify([PL.timing, PL.lines.length]));
+
   // --- line mode ----------------------------------------------------------------
   var LM = '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Line"><body>' +
     '<p begin="5.0" end="8.0">A full line of text</p><p begin="9.0">Missing end</p>' +
