@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lyra parser tests</title>
+<style>
+  body { background: #101014; color: #ddd; font: 14px/1.6 ui-monospace, monospace; padding: 24px; }
+  .pass { color: #7ee787; }
+  .fail { color: #ff7b72; font-weight: 700; }
+  h1 { font-size: 18px; }
+</style>
+</head>
+<body>
+<h1>Lyra parser tests</h1>
+<div id="out"></div>
+<script src="../src/ttml.js"></script>
+<script>
+(function () {
+  "use strict";
+  var out = document.getElementById("out");
+  var results = [];
+  function t(name, cond, detail) {
+    results.push({ name: name, pass: !!cond, detail: detail || "" });
+    var d = document.createElement("div");
+    d.className = cond ? "pass" : "fail";
+    d.textContent = (cond ? "PASS  " : "FAIL  ") + name + (cond ? "" : "   [" + detail + "]");
+    out.appendChild(d);
+  }
+  function eq(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+
+  // --- clock formats -----------------------------------------------------------
+  var P = function (s) { // reach the internal parser through a 1-line TTML
+    var m = Lyra.parseTTML('<tt xmlns="http://www.w3.org/ns/ttml"><body><p begin="' + s + '" end="' + s + '">x</p></body></tt>');
+    return m && m.lines[0] ? m.lines[0].start : null;
+  };
+  t("clock m:ss.fff", P("1:10.127") === 70127, P("1:10.127"));
+  t("clock ss.fff", P("23.549") === 23549, P("23.549"));
+  t("clock 12.3s", P("12.3s") === 12300, P("12.3s"));
+  t("clock 500ms", P("500ms") === 500, P("500ms"));
+  t("clock mm:ss", P("02:35") === 155000, P("02:35"));
+  t("clock hh:mm:ss.fff", P("00:02:35.500") === 155500, P("00:02:35.500"));
+  t("clock bare int", P("35") === 35000, P("35"));
+
+  // --- word/syllable whitespace semantics --------------------------------------
+  var W = '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word"><body>' +
+    '<p begin="1.0" end="3.0"><span begin="1.0" end="1.4">Some</span><span begin="1.4" end="1.7">bo</span><span begin="1.7" end="2.0">dy</span> <span begin="2.1" end="3.0">else</span></p>' +
+    '</body></tt>';
+  var wm = Lyra.parseTTML(W);
+  t("word mode detected", wm && wm.timing === "word", wm && wm.timing);
+  t("adjacent spans join into one word", wm.lines[0].words.length === 2, wm.lines[0].words.length);
+  t("joined word text", wm.lines[0].words[0].text === "Somebody", wm.lines[0].words[0].text);
+  t("joined word has 3 syllables", wm.lines[0].words[0].syllables.length === 3);
+  t("line text", wm.lines[0].text === "Somebody else", wm.lines[0].text);
+
+  // pretty-printed: newline+indent between spans must NOT split the word,
+  // because the doc also contains real space separators
+  var PP = '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word"><body>' +
+    '<p begin="1.0" end="3.0"><span begin="1.0" end="1.4">Con</span>\n      <span begin="1.4" end="1.7">stell</span>\n      <span begin="1.7" end="2.0">ation</span> <span begin="2.1" end="3.0">now</span></p>' +
+    '</body></tt>';
+  var pp = Lyra.parseTTML(PP);
+  t("pretty-printed indent does not split words", pp.lines[0].words.length === 2, JSON.stringify(pp.lines[0].words.map(function (w) { return w.text; })));
+  t("pretty-printed joined text", pp.lines[0].words[0].text === "Constellation", pp.lines[0].words[0].text);
+
+  // span-per-line file with NO spaces anywhere: newlines become separators
+  var NL = '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word"><body>' +
+    '<p begin="1.0" end="3.0"><span begin="1.0" end="1.4">one</span>\n<span begin="1.4" end="1.7">two</span></p>' +
+    '</body></tt>';
+  var nl = Lyra.parseTTML(NL);
+  t("no-space file: newlines separate words", nl.lines[0].words.length === 2, nl.lines[0].words.length);
+
+  // --- agents / duets / x-bg ----------------------------------------------------
+  var D = '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word">' +
+    '<head><metadata><ttm:agent type="person" xml:id="v1"/><ttm:agent type="person" xml:id="v2"/></metadata></head><body>' +
+    '<p begin="1.0" end="2.0" ttm:agent="v1"><span begin="1.0" end="2.0">lead</span></p>' +
+    '<p begin="3.0" end="4.0" ttm:agent="v2"><span begin="3.0" end="4.0">reply</span>' +
+    '<span ttm:role="x-bg"><span begin="3.5" end="4.5">(echo)</span></span></p>' +
+    '</body></tt>';
+  var dm = Lyra.parseTTML(D);
+  t("primary agent left-aligned", dm.lines[0].align === "start", dm.lines[0].align);
+  t("secondary agent right-aligned", dm.lines[1].align === "end", dm.lines[1].align);
+  t("x-bg captured", dm.lines[1].background.length === 1 && dm.lines[1].background[0].words[0].text === "(echo)",
+    JSON.stringify(dm.lines[1].background));
+  t("x-bg extends line end", dm.lines[1].end === 4500, dm.lines[1].end);
+
+  // --- review-fix regressions ---------------------------------------------------
+  // line-mode text must exclude x-bg / x-translation content
+  var LX = '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Line"><body>' +
+    '<p begin="10s" end="14s">la la <span ttm:role="x-bg">(ooh)</span><span ttm:role="x-translation">translated</span></p>' +
+    '</body></tt>';
+  var lx = Lyra.parseTTML(LX);
+  t("line-mode text excludes x-bg/translation", lx.lines[0].text === "la la", JSON.stringify(lx.lines[0].text));
+  t("line-mode still captures x-bg group once", lx.lines[0].background.length === 1);
+
+  // x-bg wrapper carrying its own begin/end with plain-text content
+  var BT = '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word"><body>' +
+    '<p begin="60s" end="64s"><span begin="60s" end="61s">Hey</span> <span ttm:role="x-bg" begin="61s" end="63s">(oh yeah)</span></p>' +
+    '</body></tt>';
+  var bt = Lyra.parseTTML(BT);
+  t("x-bg own begin/end honored", bt.lines[0].background[0].start === 61000 && bt.lines[0].background[0].end === 63000,
+    JSON.stringify(bt.lines[0].background[0] && [bt.lines[0].background[0].start, bt.lines[0].background[0].end]));
+
+  // internal-space word boundaries + pretty-printed newlines: words stay joined
+  var IS = '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word"><body>' +
+    '<p begin="1s" end="3s">\n  <span begin="1.0s" end="1.2s">Fa</span>\n  <span begin="1.2s" end="1.6s">ther </span>\n  <span begin="1.6s" end="2.0s">now</span>\n</p>' +
+    '</body></tt>';
+  var isb = Lyra.parseTTML(IS);
+  t("internal-space file survives pretty-printing", eq(isb.lines[0].words.map(function (w) { return w.text; }), ["Father", "now"]),
+    JSON.stringify(isb.lines[0].words.map(function (w) { return w.text; })));
+
+  // namespace-prefixed spans inside a formatting wrapper
+  var PX = '<x:tt xmlns:x="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word"><x:body>' +
+    '<x:p begin="1s" end="2s"><x:span><x:span begin="1s" end="1.5s">pre</x:span><x:span begin="1.5s" end="2s">fixed</x:span></x:span></x:p>' +
+    '</x:body></x:tt>';
+  var px = Lyra.parseTTML(PX);
+  t("prefixed spans in wrapper still word-timed", px && px.timing === "word" && px.lines[0].words.length === 1 && px.lines[0].words[0].text === "prefixed",
+    px && JSON.stringify(px.lines[0].words));
+
+  // --- line mode ----------------------------------------------------------------
+  var LM = '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Line"><body>' +
+    '<p begin="5.0" end="8.0">A full line of text</p><p begin="9.0">Missing end</p>' +
+    '</body></tt>';
+  var lm = Lyra.parseTTML(LM);
+  t("line mode detected", lm.timing === "line", lm.timing);
+  t("line text intact", lm.lines[0].text === "A full line of text", lm.lines[0].text);
+  t("missing end repaired", lm.lines[1].end > lm.lines[1].start, lm.lines[1].end);
+
+  // --- sample files -------------------------------------------------------------
+  fetch("sample-word.ttml").then(function (r) { return r.text(); }).then(function (txt) {
+    var m = Lyra.parseTTML(txt);
+    t("sample-word parses", !!m, "null");
+    t("sample-word is word-timed", m.timing === "word", m.timing);
+    t("sample-word 24 lines", m.lines.length === 24, m.lines.length);
+    t("sample-word songwriters", eq(m.songwriters, ["Lyra Demo"]), JSON.stringify(m.songwriters));
+    t("sample-word first line words", eq(m.lines[0].words.map(function (w) { return w.text; }), ["I", "was", "chasing", "satellites"]),
+      JSON.stringify(m.lines[0].words.map(function (w) { return w.text; })));
+    var opp = m.lines.filter(function (l) { return l.align === "end"; }).length;
+    t("sample-word duet lines", opp === 5, opp);
+    var bgs = m.lines.filter(function (l) { return l.background.length; }).length;
+    t("sample-word bg-vocal lines", bgs === 4, bgs);
+    var held = [];
+    m.lines.forEach(function (l) { l.words.forEach(function (w) { w.syllables.forEach(function (s) { if (s.end - s.start > 900) held.push(s.text); }); }); });
+    t("sample-word has a held syllable", held.length > 0, JSON.stringify(held));
+  }).then(function () {
+    // --- JSON adapter ----------------------------------------------------------
+    var env = { ok: true, lyrics: { available: true, data: { Type: "Syllable", Content: [
+      { Type: "Vocal", OppositeAligned: false, Lead: { StartTime: 1.0, EndTime: 2.0, Syllables: [
+        { Text: "hel", StartTime: 1.0, IsPartOfWord: true },
+        { Text: "lo", StartTime: 1.4, IsPartOfWord: false },
+        { Text: "world", StartTime: 1.6, EndTime: 2.0, IsPartOfWord: false }] } },
+      { Type: "Vocal", OppositeAligned: true, Lead: { StartTime: 3.0, EndTime: 4.0, Syllables: [
+        { Text: "yo", StartTime: 3.0, EndTime: 4.0, IsPartOfWord: false }] },
+        Background: [{ StartTime: 3.2, EndTime: 4.4, Syllables: [{ Text: "(ooh)", StartTime: 3.2, EndTime: 4.4, IsPartOfWord: false }] }] }
+    ] }, }, songwriters: { available: true, names: ["A. Writer"] } };
+    var jm = Lyra.fromLyricsJSON(env);
+    t("v2 envelope unwraps", !!jm && jm.timing === "word", jm && jm.timing);
+    t("IsPartOfWord joins syllables", jm.lines[0].words.length === 2 && jm.lines[0].words[0].text === "hello",
+      JSON.stringify(jm.lines[0].words.map(function (w) { return w.text; })));
+    t("missing EndTime repaired to next start", jm.lines[0].words[0].syllables[0].end === 1400, jm.lines[0].words[0].syllables[0].end);
+    t("envelope songwriters", eq(jm.songwriters, ["A. Writer"]), JSON.stringify(jm.songwriters));
+    t("OppositeAligned maps to end", jm.lines[1].align === "end");
+    t("JSON background vocals", jm.lines[1].background.length === 1);
+
+    // review-fix regressions: null Content entry + Line-type end repair
+    var jn = Lyra.fromLyricsJSON({ Type: "Line", Content: [
+      null,
+      { Text: "first", StartTime: 10 },
+      { Text: "second", StartTime: 14 }] });
+    t("null Content entry skipped", jn && jn.lines.length === 2, jn && jn.lines.length);
+    t("Line-type missing EndTime repaired", jn.lines[0].end === 14000 && jn.lines[1].end === 19000,
+      jn && JSON.stringify([jn.lines[0].end, jn.lines[1].end]));
+
+    // --- LRC -------------------------------------------------------------------
+    var lrc = "[00:10.00]plain line one\n[00:14.50]<00:14.50>word <00:15.10>timed <00:15.80>line";
+    var lr = Lyra.fromLRC(lrc);
+    t("LRC parses", !!lr && lr.lines.length === 2, lr && lr.lines.length);
+    t("LRC enhanced words", lr.lines[1].words.length === 3, lr.lines[1].words.length);
+    t("LRC line end = next start", lr.lines[0].end === 14500, lr.lines[0].end);
+
+    // review-fix regressions: leading unstamped text + repeated-stamp offsets
+    var lr2 = Lyra.fromLRC("[00:10.00][00:30.00]lead <00:10.40>tail\n[00:20.00]middle");
+    t("LRC leading unstamped text kept", lr2.lines[0].words.length === 2 && lr2.lines[0].words[0].text === "lead",
+      JSON.stringify(lr2.lines[0].words.map(function (w) { return w.text; })));
+    var rep = lr2.lines[2]; // 30s repeat (lines sorted by start)
+    t("LRC repeat stamps shift word times", rep.start === 30000 && rep.words[1].start === 30400,
+      JSON.stringify([rep.start, rep.words[1] && rep.words[1].start]));
+
+    var fails = results.filter(function (r) { return !r.pass; });
+    var d = document.createElement("div");
+    d.style.marginTop = "16px";
+    d.className = fails.length ? "fail" : "pass";
+    d.textContent = results.length + " tests, " + fails.length + " failures";
+    out.appendChild(d);
+    window.__results = results;
+    window.__done = true;
+  });
+})();
+</script>
+</body>
+</html>

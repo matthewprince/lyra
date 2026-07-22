@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lyra — lyric renderer demo</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0b0b0f; color: #fff; overflow: hidden;
+    font-family: -apple-system, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", Inter, Roboto, sans-serif;
+  }
+  #stage { position: absolute; inset: 0 0 84px 0; }
+  /* source picker */
+  #sources {
+    position: fixed; top: 14px; left: 14px; z-index: 20;
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap; max-width: 70vw;
+  }
+  .chip {
+    border: 0; border-radius: 999px; padding: 8px 14px; cursor: pointer;
+    background: rgba(255,255,255,.08); color: #fff; font-size: 13px; font-weight: 600;
+    backdrop-filter: blur(10px); transition: background .15s;
+  }
+  .chip:hover { background: rgba(255,255,255,.18); }
+  .chip.on { background: rgba(255,255,255,.28); }
+  #api-form { display: none; gap: 6px; }
+  #api-form.open { display: inline-flex; }
+  #api-form input {
+    border: 0; border-radius: 8px; padding: 8px 10px; width: 150px;
+    background: rgba(255,255,255,.1); color: #fff; font-size: 13px; outline: none;
+  }
+  #api-form input::placeholder { color: rgba(255,255,255,.45); }
+  /* player bar */
+  #bar {
+    position: fixed; left: 0; right: 0; bottom: 0; height: 84px; z-index: 20;
+    display: flex; align-items: center; gap: 14px; padding: 0 18px;
+    background: rgba(16,16,22,.82); backdrop-filter: blur(18px);
+    border-top: 1px solid rgba(255,255,255,.07);
+  }
+  #cover { width: 52px; height: 52px; border-radius: 8px; flex: none; }
+  #meta { width: 190px; flex: none; overflow: hidden; }
+  #meta .t { font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #meta .a { font-size: 12px; opacity: .6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #play {
+    width: 44px; height: 44px; border-radius: 50%; border: 0; cursor: pointer; flex: none;
+    background: #fff; color: #000; font-size: 17px; display: flex; align-items: center; justify-content: center;
+  }
+  #seek { flex: 1; accent-color: #fff; height: 4px; cursor: pointer; }
+  .time { font-variant-numeric: tabular-nums; font-size: 12px; opacity: .65; width: 44px; flex: none; }
+  #rate { background: rgba(255,255,255,.1); border: 0; color: #fff; border-radius: 8px; padding: 6px 8px; font-size: 12px; cursor: pointer; }
+  #hint { position: fixed; right: 16px; top: 14px; z-index: 20; font-size: 12px; opacity: .4; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="sources">
+  <button class="chip on" id="src-word">Northern Light (word TTML)</button>
+  <button class="chip" id="src-line">Slow Down (line TTML)</button>
+  <button class="chip" id="src-api">Qobuzify API…</button>
+  <span id="api-form">
+    <input id="q-name" placeholder="Track name" value="Blinding Lights">
+    <input id="q-artist" placeholder="Artist" value="The Weeknd">
+    <button class="chip" id="q-go">Load</button>
+  </span>
+</div>
+<div id="hint">click a line to seek · wheel to browse</div>
+
+<div id="bar">
+  <canvas id="cover" width="104" height="104"></canvas>
+  <div id="meta"><div class="t" id="m-title">Northern Light</div><div class="a" id="m-artist">Lyra Demo</div></div>
+  <button id="play" title="Play/Pause">▶</button>
+  <span class="time" id="t-cur">0:00</span>
+  <input id="seek" type="range" min="0" max="120000" value="0" step="100">
+  <span class="time" id="t-dur">2:00</span>
+  <select id="rate" title="Playback rate">
+    <option value="1">1x</option><option value="2">2x</option><option value="4">4x</option><option value="0.5">0.5x</option>
+  </select>
+</div>
+
+<script src="../src/ttml.js"></script>
+<script src="../src/engine.js"></script>
+<script src="../src/bg.js"></script>
+<script>
+(function () {
+  "use strict";
+  // --- synthetic playback clock ------------------------------------------------
+  var clock = { pos: 0, playing: false, rate: 1, mark: 0, duration: 120000 };
+  function now() { return performance.now(); }
+  function getPos() {
+    if (!clock.playing) return clock.pos;
+    var p = clock.pos + (now() - clock.mark) * clock.rate;
+    if (p >= clock.duration) { pause(); clock.pos = clock.duration; return clock.pos; }
+    return p;
+  }
+  // tab-freeze protection: while hidden, Chrome can freeze the page for minutes;
+  // on return, rebase the clock so the demo doesn't fast-forward through the song
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && clock.playing) {
+      var p = clock.pos + (now() - clock.mark) * clock.rate;
+      if (p >= clock.duration || p < 0) { clock.pos = Math.min(clock.pos, clock.duration); clock.mark = now(); }
+    }
+  });
+  function play() { if (clock.playing) return; clock.playing = true; clock.mark = now(); playBtn.textContent = "❚❚"; }
+  function pause() { if (!clock.playing) return; clock.pos = getPos(); clock.playing = false; playBtn.textContent = "▶"; }
+  function seek(ms) {
+    clock.pos = Math.max(0, Math.min(clock.duration, ms));
+    clock.mark = now();
+  }
+
+  // --- renderer ----------------------------------------------------------------
+  var lyra = Lyra.create({
+    mount: document.getElementById("stage"),
+    getPos: getPos,
+    isPlaying: function () { return clock.playing; },
+    onSeek: function (ms) { seek(ms); if (!clock.playing) play(); },
+  });
+  window.lyra = lyra; // for poking at stats() from the console
+
+  // --- procedural cover art (no external assets) --------------------------------
+  function makeCover(seedStr) {
+    var seed = 0;
+    for (var i = 0; i < seedStr.length; i++) seed = (seed * 31 + seedStr.charCodeAt(i)) >>> 0;
+    function rnd() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+    var c = document.getElementById("cover");
+    var x = c.getContext("2d");
+    var hues = [rnd() * 360, rnd() * 360, rnd() * 360];
+    var g = x.createLinearGradient(0, 0, 104, 104);
+    g.addColorStop(0, "hsl(" + hues[0] + ",65%,38%)");
+    g.addColorStop(.55, "hsl(" + hues[1] + ",70%,30%)");
+    g.addColorStop(1, "hsl(" + hues[2] + ",60%,16%)");
+    x.fillStyle = g;
+    x.fillRect(0, 0, 104, 104);
+    for (var b = 0; b < 4; b++) {
+      x.beginPath();
+      x.arc(rnd() * 104, rnd() * 104, 12 + rnd() * 30, 0, 7);
+      x.fillStyle = "hsla(" + (rnd() * 360) + ",70%,60%,.25)";
+      x.fill();
+    }
+    return c.toDataURL();
+  }
+
+  function setTrack(title, artist, model) {
+    document.getElementById("m-title").textContent = title;
+    document.getElementById("m-artist").textContent = artist;
+    var cover = makeCover(title + "|" + artist);
+    seek(0);
+    pause();
+    var ok = lyra.load(model);
+    lyra.setCover(cover);
+    if (ok) {
+      clock.duration = Math.max(10000, (model.duration || 0) + 6000);
+      seekEl.max = clock.duration;
+      durEl.textContent = fmtT(clock.duration);
+      play();
+    }
+    lyra.start();
+  }
+
+  // --- sources -------------------------------------------------------------------
+  function loadTTML(path, title, artist) {
+    fetch(path).then(function (r) { return r.text(); }).then(function (txt) {
+      var model = Lyra.parseTTML(txt);
+      if (!model) { lyra.status("Failed to parse " + path); return; }
+      setTrack(title, artist, model);
+    });
+  }
+  function loadAPI(name, artist) {
+    lyra.status("Fetching from Qobuzify API…");
+    var u = "https://api.qobuzify.app/v2/track?name=" + encodeURIComponent(name) + "&artist=" + encodeURIComponent(artist);
+    fetch(u).then(function (r) { return r.json(); }).then(function (j) {
+      if (!j || !j.ok || !j.lyrics || !j.lyrics.available || !j.lyrics.data) {
+        lyra.status("No lyrics found for " + name);
+        return;
+      }
+      var model = Lyra.fromLyricsJSON(j);
+      var tn = (j.track && j.track.name) || name;
+      var ta = (j.track && j.track.artist) || artist;
+      setTrack(tn, ta, model);
+    }).catch(function (e) { lyra.status("API error: " + e.message); });
+  }
+
+  // --- ui wiring -------------------------------------------------------------------
+  var playBtn = document.getElementById("play");
+  var seekEl = document.getElementById("seek");
+  var curEl = document.getElementById("t-cur");
+  var durEl = document.getElementById("t-dur");
+  function fmtT(ms) {
+    var s = Math.floor(ms / 1000);
+    return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2);
+  }
+  playBtn.addEventListener("click", function () { clock.playing ? pause() : play(); });
+  var scrubbing = false;
+  seekEl.addEventListener("input", function () { scrubbing = true; seek(+seekEl.value); });
+  seekEl.addEventListener("change", function () { scrubbing = false; });
+  document.getElementById("rate").addEventListener("change", function (e) {
+    clock.pos = getPos(); clock.mark = now(); clock.rate = +e.target.value;
+  });
+  setInterval(function () {
+    var p = getPos();
+    curEl.textContent = fmtT(p);
+    if (!scrubbing) seekEl.value = p;
+  }, 250);
+
+  function selChip(id) {
+    document.querySelectorAll("#sources .chip").forEach(function (c) { c.classList.remove("on"); });
+    document.getElementById(id).classList.add("on");
+  }
+  document.getElementById("src-word").addEventListener("click", function () {
+    selChip("src-word");
+    document.getElementById("api-form").classList.remove("open");
+    loadTTML("sample-word.ttml", "Northern Light", "Lyra Demo");
+  });
+  document.getElementById("src-line").addEventListener("click", function () {
+    selChip("src-line");
+    document.getElementById("api-form").classList.remove("open");
+    loadTTML("sample-line.ttml", "Slow Down", "Lyra Demo");
+  });
+  document.getElementById("src-api").addEventListener("click", function () {
+    selChip("src-api");
+    document.getElementById("api-form").classList.toggle("open");
+  });
+  document.getElementById("q-go").addEventListener("click", function () {
+    loadAPI(document.getElementById("q-name").value, document.getElementById("q-artist").value);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.code === "Space" && e.target.tagName !== "INPUT") { e.preventDefault(); clock.playing ? pause() : play(); }
+  });
+
+  loadTTML("sample-word.ttml", "Northern Light", "Lyra Demo");
+})();
+</script>
+</body>
+</html>
