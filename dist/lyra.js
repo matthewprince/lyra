@@ -1,4 +1,4 @@
-/* Lyra lyric renderer - built 2026-07-22T08:19:10Z */
+/* Lyra lyric renderer - built 2026-07-22T08:29:05Z */
 // Lyra parsers - TTML / lyrics-JSON / LRC in, one internal model out.
 // All times in MILLISECONDS (upstream JSON is seconds, converted here).
 //
@@ -472,9 +472,12 @@
 "filter:drop-shadow(0 0 6px rgba(255,255,255,.5)) drop-shadow(0 0 22px rgba(255,255,255,.28));}" +
 // held notes get a hotter, wider bloom (class-swapped static filter)
 ".lyra-w-hold .lyra-wg{filter:drop-shadow(0 0 7px rgba(255,255,255,.68)) drop-shadow(0 0 32px rgba(255,255,255,.42));}" +
+// overlay glyph colours are NOT gated on the active/cur classes - visibility is
+// the envelope-driven opacity alone. gating them meant the glow vanished the
+// instant a word's classes flipped, mid-fade (boidu caught this from a video)
 ".lyra-gs{color:transparent;}" +
-".lyra-line.lyra-active .lyra-gs.lyra-s-sung{color:#fff;}" +
-".lyra-line.lyra-active .lyra-gs.lyra-s-cur{" +
+".lyra-w-sung .lyra-gs,.lyra-gs.lyra-s-sung{color:#fff;}" +
+".lyra-gs.lyra-s-cur{" +
 "background-image:linear-gradient(90deg,#fff calc(var(--fill) - 18%),transparent var(--fill));" +
 "-webkit-background-clip:text;background-clip:text;}" +
 // background vocals: smaller echo line under the lead
