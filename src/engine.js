@@ -46,6 +46,8 @@
     lineRipple: false,      // line-timed tracks: synthesize a word stagger (typing
                             // ripple). OFF: tried it, reads choppy - line mode looks
                             // best as one clean whole-line brighten
+    letterWave: true,       // held words split into letters and a swell travels
+                            // across them (the big-note treatment)
     fontFamily: null,
     background: true,       // drive Lyra.Background if present
     closeButton: true,      // rendered when onClose is provided; set false to suppress
@@ -92,7 +94,9 @@
 // words are plain containers, the paint tricks live on syllables. NO transitions on
 // word lift - it's a per-frame envelope from the engine. transition pops looked like
 // a pogo stick on gapless tracks (Alone Pt. II, ~4 words/s contiguous).
-".lyra-w{position:relative;display:inline-block;transform-origin:center 80%;}" +
+// idle words rest slightly SMALL (.96) and grow to 1.0 as they're sung - the
+// grow-arc is most of what makes a sung word feel alive
+".lyra-w{position:relative;display:inline-block;transform-origin:center 80%;scale:.96;}" +
 // syllables: dim future / bright sung / gradient on the current one. do NOT put
 // scale back on these - the old 1.09 hold swell grew long words ~10px sideways
 // and glued them to their neighbors ("thatsomeone"). swell lives in the envelope now.
@@ -180,6 +184,7 @@
 ".lyra-cut .lyra-line,.lyra-cut .lyra-w,.lyra-cut .lyra-wg,.lyra-cut .lyra-s,.lyra-cut .lyra-gs,.lyra-cut .lyra-int{transition:none!important;}" +
 "@media (prefers-reduced-motion:reduce){" +
 ".lyra-line,.lyra-w,.lyra-s,.lyra-gs{transition-duration:.01s!important;}" +
+".lyra-w{scale:1!important;}" + // no grow-arc under reduced motion, so no small idle either
 ".lyra-int-dots,.lyra-enter{animation:none!important;}}";
 
   function injectCSS() {
@@ -326,24 +331,49 @@
     }
 
     // build
+    var RTL_CHARS = /[֑-ࣿיִ-﷿ﹰ-﻿]/; // joining scripts: never letter-split
     function buildWord(word, withGlow) {
       var w = el("span", "lyra-w");
       // lift amplitude from word duration: <=~180ms -> 0.25 (barely moves), >=600ms -> 1
       var pop = reduced ? 0 : Math.max(0.25, Math.min(1, ((word.end - word.start) - 120) / 480));
-      var meta = { el: w, glow: null, start: word.start, end: word.end, pop: pop, syls: [], _ws: -1, _lift: 0 };
-      for (var i = 0; i < word.syllables.length; i++) {
-        var sy = word.syllables[i];
+      // hold-tier words split into LETTERS so the swell can travel across them.
+      // each syllable's real time is subdivided across its own letters (keeps the
+      // actual sung rhythm, unlike a flat even split across the whole word).
+      var pieces = word.syllables, wave = false;
+      if (S.letterWave && !reduced && (word.end - word.start) >= HOLD_MS && !RTL_CHARS.test(word.text)) {
+        var glyphs = 0;
+        for (var g0 = 0; g0 < word.syllables.length; g0++) glyphs += Array.from(word.syllables[g0].text).length;
+        if (glyphs >= 3 && glyphs <= 12) {
+          pieces = [];
+          for (var g1 = 0; g1 < word.syllables.length; g1++) {
+            var sy0 = word.syllables[g1], chars = Array.from(sy0.text);
+            var lstep = (sy0.end - sy0.start) / Math.max(1, chars.length);
+            for (var g2 = 0; g2 < chars.length; g2++) {
+              pieces.push({
+                start: sy0.start + g2 * lstep,
+                end: g2 === chars.length - 1 ? sy0.end : sy0.start + (g2 + 1) * lstep,
+                text: chars[g2],
+              });
+            }
+          }
+          wave = true;
+        }
+      }
+      var meta = { el: w, glow: null, start: word.start, end: word.end, pop: pop, wave: wave,
+                   syls: [], _ws: -1, _lift: 0, _grow: 0, _glo: 0 };
+      for (var i = 0; i < pieces.length; i++) {
+        var sy = pieces[i];
         var se = el("span", "lyra-s");
         se.textContent = sy.text;
         w.appendChild(se);
-        meta.syls.push({ el: se, gel: null, start: sy.start, end: sy.end, _ss: -1, _f: -1 });
+        meta.syls.push({ el: se, gel: null, start: sy.start, end: sy.end, _ss: -1, _f: -1, _wv: -1, _wg: -1 });
       }
       if (withGlow) {
         var g = el("span", "lyra-wg");
         g.setAttribute("aria-hidden", "true");
-        for (var j = 0; j < meta.syls.length; j++) {
+        for (var j = 0; j < pieces.length; j++) {
           var gs = el("span", "lyra-gs");
-          gs.textContent = word.syllables[j].text;
+          gs.textContent = pieces[j].text;
           g.appendChild(gs);
           meta.syls[j].gel = gs;
         }
@@ -735,7 +765,7 @@
       if (wm._ws !== -1) { wm._ws = -1; wm.el.classList.remove("lyra-w-cur", "lyra-w-sung"); }
       wm.el.classList.remove("lyra-w-hold");
       uncool(wm);
-      applyLift(wm, 0);
+      applyLift(wm, 0, 0, 0);
       for (var s = 0; s < wm.syls.length; s++) resetSyl(wm.syls[s]);
     }
     function resetSyl(sy) {
@@ -750,6 +780,12 @@
         if (sy.gel) sy.gel.style.removeProperty("--fill");
         stat.styleWrites++;
       }
+      if (sy._wv !== -1) {
+        sy._wv = -1;
+        sy.el.style.scale = "";
+        sy.el.style.translate = "";
+      }
+      if (sy._wg !== -1 && sy.gel) { sy._wg = -1; sy.gel.style.opacity = ""; }
     }
     function setSylState(sy, st) {
       if (sy._ss === st) return;
@@ -765,6 +801,12 @@
         sy.el.style.removeProperty("--fill");
         if (sy.gel) sy.gel.style.removeProperty("--fill");
       }
+      if (st !== 1 && sy._wv !== -1) { // letter-wave residue
+        sy._wv = -1;
+        sy.el.style.scale = "";
+        sy.el.style.translate = "";
+      }
+      if (st !== 1 && sy._wg !== -1 && sy.gel) { sy._wg = -1; sy.gel.style.opacity = ""; }
     }
     // word lift envelope
     // lift(t): attack -> sustain -> release-after-end (the cooling set). pure
@@ -779,20 +821,28 @@
     var SCALE_CAP_PX = 4; // max ABSOLUTE horizontal growth: % scale on a long word
                           // otherwise eats the inter-word space and words clip together
     function smooth(x) { return x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x); }
-    function applyLift(wm, v) {
-      var q = Math.round(v * 50) / 50; // 0.02 steps
-      if (wm._lift === q) return;
-      wm._lift = q;
-      if (q <= 0) {
+    // q = arc energy (overshoot), grow = 0.96->1.0 sung growth, glowV = bloom opacity.
+    // a fully-sung word rests at scale 1 (grow 1, q 0); idle words sit at the CSS .96.
+    function applyLift(wm, q, grow, glowV) {
+      var qq = Math.round(q * 50) / 50;
+      var gr = Math.round(grow * 50) / 50;
+      var gl = Math.round((glowV || 0) * 50) / 50;
+      if (wm._lift === qq && wm._grow === gr && wm._glo === gl) return;
+      wm._lift = qq; wm._grow = gr; wm._glo = gl;
+      if (qq <= 0 && gr <= 0 && gl <= 0) {
         wm.el.style.translate = "";
         wm.el.style.scale = "";
         if (wm.glow) wm.glow.style.opacity = "";
       } else {
         var sc = LIFT_SCALE;
         if (wm.px && LIFT_SCALE * wm.px > SCALE_CAP_PX) sc = SCALE_CAP_PX / wm.px;
-        wm.el.style.translate = "0 " + (-(LIFT_EM * q)).toFixed(4) + "em";
-        wm.el.style.scale = (1 + sc * q).toFixed(4);
-        if (wm.glow) wm.glow.style.opacity = Math.min(1, 0.85 * q).toFixed(3);
+        wm.el.style.scale = (0.96 + 0.04 * gr + sc * qq).toFixed(4);
+        var ty = 0.008 * (1 - gr) - LIFT_EM * qq; // starts a hair low, rises with the arc
+        wm.el.style.translate = Math.abs(ty) < 0.001 ? "" : "0 " + ty.toFixed(4) + "em";
+        if (wm.glow) {
+          // wave words carry glow on the per-letter twins instead
+          wm.glow.style.opacity = wm.wave ? (gl > 0 ? "1" : "") : (gl <= 0 ? "" : Math.min(1, gl).toFixed(3));
+        }
       }
       stat.styleWrites++;
     }
@@ -800,27 +850,28 @@
       for (var i = 0; i < cooling.length; i++) if (cooling[i].wm === wm) { cooling.splice(i, 1); return; }
     }
     function coolWord(wm, now, deferReset) {
-      if (wm._lift <= 0) return;
+      if (wm._lift <= 0 && wm._glo <= 0) return;
       for (var i = 0; i < cooling.length; i++) {
         if (cooling[i].wm === wm) { // already mid-drop: keep its timing, never restart
           if (deferReset) cooling[i].deferReset = true;
           return;
         }
       }
-      cooling.push({ wm: wm, from: wm._lift, t0: now, deferReset: !!deferReset });
+      cooling.push({ wm: wm, from: wm._lift, glowFrom: wm._glo, t0: now, deferReset: !!deferReset });
     }
     function stepCooling(now) {
       for (var i = cooling.length - 1; i >= 0; i--) {
         var c = cooling[i], k = (now - c.t0) / RELEASE_MS;
         if (k >= 1) {
-          applyLift(c.wm, 0);
+          applyLift(c.wm, 0, 1, 0); // lands fully sung: rests at scale 1
           var wm = c.wm, defer = c.deferReset;
           cooling.splice(i, 1);
-          wm.el.classList.remove("lyra-w-hold"); // held-note bloom ends when the drop lands
+          wm.el.classList.remove("lyra-w-hold");
           if (defer) resetWord(wm); // class/fill cleanup we postponed so the drop could play
           continue;
         }
-        applyLift(c.wm, c.from * smooth(1 - k));
+        var s = smooth(1 - k);
+        applyLift(c.wm, c.from * s, 1, c.glowFrom * s);
       }
     }
 
@@ -853,20 +904,34 @@
           if (wstate === 1) {
             uncool(wm);
             if (en - st >= HOLD_MS) wm.el.classList.add("lyra-w-hold");
-          } else {
-            if (was === 1) coolWord(wm, now); // let it fall on its own
+          } else if (wstate === 0) { // back to idle (seek/jump-back): instant, no drop
+            uncool(wm);
+            applyLift(wm, 0, 0, 0);
+            for (var r0 = 0; r0 < wm.syls.length; r0++) resetSyl(wm.syls[r0]);
+          } else { // sung
+            if (was === 1) coolWord(wm, now); // finished naturally: let it fall on its own
+            else { uncool(wm); applyLift(wm, 0, 1, 0); } // jumped straight to sung: rest at full size
             for (var r = 0; r < wm.syls.length; r++) resetSyl(wm.syls[r]);
           }
         }
         if (wstate !== 1) continue;
         if (wm.pop > 0) {
           var wdur = en - st;
-          var e = smooth((pos - st) / Math.max(1, Math.min(120, wdur * 0.35)));
-          if (wdur >= HOLD_MS) {
-            var hp = smooth((pos - st) / wdur);
+          var p = clamp((pos - st) / wdur, 0, 1);
+          var atk = smooth((pos - st) / Math.max(1, Math.min(120, wdur * 0.35)));
+          // the arc: rise to a peak ~65% through the word, settle to ~55% energy by
+          // its end (the drop then releases the rest). words travel a little
+          // parabola instead of holding a plateau - that's the "alive" feel.
+          var e = atk * (p < 0.65 ? smooth(p / 0.65) : 1 - 0.45 * smooth((p - 0.65) / 0.35));
+          var glowV;
+          if (wdur >= HOLD_MS) { // held notes: swell + shimmer, glow sustained
+            var hp = smooth(p);
             e *= 1 + hp * (0.5 + 0.06 * Math.sin((pos - st) / 175));
+            glowV = Math.min(1, 0.85 * wm.pop * atk * (1 + 0.4 * hp));
+          } else { // normal words: a glow spark - in fast, gone by the word's end
+            glowV = 0.85 * wm.pop * smooth(p / 0.15) * (1 - smooth((p - 0.6) / 0.4));
           }
-          applyLift(wm, wm.pop * e);
+          applyLift(wm, wm.pop * e, smooth(p), glowV);
         }
         // syllable walk inside the current word
         var sPlay = false;
@@ -880,6 +945,36 @@
           // 118 not 100: the soft edge (18% wide) fully clears the glyph right as
           // the state flips to sung, so the edge exits instead of popping away
           if (ss === 1) setSylFill(sy, ((pos - sy.start) / Math.max(1, sy.end - sy.start)) * 118);
+        }
+        // letter wave (hold words split into letters): a swell travels across the
+        // word centred on the letter being sung. scale falloff is a sharp bell,
+        // glow a wider one; letters behind keep a low residual glow.
+        if (wm.wave) {
+          var act = -1;
+          for (var l0 = 0; l0 < wm.syls.length; l0++) { if (pos >= wm.syls[l0].start) act = l0; else break; }
+          var wq = Math.min(1, wm._lift);
+          for (var l1 = 0; l1 < wm.syls.length; l1++) {
+            var Ls = wm.syls[l1], d = Math.abs(l1 - act);
+            var f = act < 0 ? 0 : 1 / (1 + Math.pow(d, 2.8));
+            var gf = act < 0 ? 0 : 1 / (1 + 0.9 * d);
+            var lsc = Math.round((1 + 0.14 * f * wm.pop) * 100) / 100;
+            var lty = Math.round(-0.022 * f * wm.pop * 1000) / 1000;
+            var lkey = lsc * 10 + lty;
+            if (Ls._wv !== lkey) {
+              Ls._wv = lkey;
+              Ls.el.style.scale = lsc === 1 ? "" : String(lsc);
+              Ls.el.style.translate = lty === 0 ? "" : "0 " + lty + "em";
+              stat.styleWrites++;
+            }
+            if (Ls.gel) {
+              var lop = Math.round(Math.min(1, (0.2 + 0.8 * gf) * wq) * 50) / 50;
+              if (Ls._wg !== lop) {
+                Ls._wg = lop;
+                Ls.gel.style.opacity = lop <= 0 ? "" : String(lop);
+                stat.styleWrites++;
+              }
+            }
+          }
         }
       }
     }
