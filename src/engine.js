@@ -163,6 +163,19 @@
 ".lyra-resume.lyra-resume-on{opacity:1;pointer-events:auto;}" +
 ".lyra-resume:not(.lyra-resume-on){translate:-50% 12px;}" +
 ".lyra-resume:hover{background:rgba(255,255,255,.2);}" +
+// "wrong lyrics" pill (only exists when the host passes onRefetch)
+".lyra-refetch{position:absolute;right:20px;bottom:22px;z-index:6;border:0;border-radius:999px;" +
+"padding:9px 15px;font-size:13px;font-weight:600;font-family:inherit;color:var(--lyra-text,#fff);cursor:pointer;" +
+"background:rgba(255,255,255,.09);backdrop-filter:blur(10px);opacity:.4;transition:opacity .15s ease,background .15s ease;display:none;}" +
+".lyra-refetch.lyra-refetch-on{display:block;}" +
+".lyra-refetch:hover{opacity:1;background:rgba(255,255,255,.18);}" +
+".lyra-refetch.lyra-refetch-busy{opacity:.9;cursor:default;animation:lyra-refetch-pulse 1s ease-in-out infinite alternate;}" +
+"@keyframes lyra-refetch-pulse{from{opacity:.35;}to{opacity:.9;}}" +
+// toast: one small transient message, opacity/translate only
+".lyra-toast{position:absolute;left:50%;bottom:70px;translate:-50% 8px;z-index:8;padding:9px 16px;border-radius:10px;" +
+"background:rgba(18,18,24,.88);backdrop-filter:blur(8px);color:var(--lyra-text,#fff);font-size:13px;font-weight:600;" +
+"opacity:0;pointer-events:none;transition:opacity .2s ease,translate .25s ease;}" +
+".lyra-toast.lyra-toast-on{opacity:1;translate:-50% 0;}" +
 // snap mode: kills every transition for the resync frame(s)
 ".lyra-cut .lyra-line,.lyra-cut .lyra-w,.lyra-cut .lyra-wg,.lyra-cut .lyra-s,.lyra-cut .lyra-gs,.lyra-cut .lyra-int{transition:none!important;}" +
 "@media (prefers-reduced-motion:reduce){" +
@@ -186,6 +199,11 @@
     var isPlaying = opts.isPlaying || function () { return true; };
     var onSeek = opts.onSeek || function () {};
     var onClose = opts.onClose || null;
+    // host hook for "these lyrics are wrong": Lyra renders the button + busy state
+    // + toast, the host does the actual re-fetching (and calls load() with the
+    // replacement). Return a Promise resolving to a short message string to toast
+    // (or null/undefined for silence).
+    var onRefetch = opts.onRefetch || null;
     var S = {};
     for (var dk in DEFAULTS) S[dk] = DEFAULTS[dk];
     for (var ok in (opts.settings || {})) S[ok] = opts.settings[ok];
@@ -203,6 +221,7 @@
     var scrollAnchor = -1;       // like anchor, but on the LEADING clock (pos + scrollLeadMs)
     var staticMode = false;      // unsynced lyrics: plain sheet, no states/follow
     var resumeEl = null, resumeShown = false;
+    var refetchEl = null, refetchBusy = false, toastEl = null, toastTimer = null;
     var marked = [];             // items currently carrying distance/near classes
     var vh = 0, maxScroll = 0, measured = false, measureQueued = false;
     var ro = null;
@@ -255,6 +274,27 @@
         retarget(false);
       });
       root.appendChild(resumeEl);
+      if (onRefetch) {
+        refetchEl = el("button", "lyra-refetch");
+        refetchEl.type = "button";
+        refetchEl.textContent = "Wrong lyrics?";
+        refetchEl.title = "Fetch a different version of these lyrics";
+        refetchEl.addEventListener("click", function () {
+          if (refetchBusy) return;
+          refetchBusy = true;
+          refetchEl.classList.add("lyra-refetch-busy");
+          refetchEl.textContent = "Fetching…";
+          var settle = function (msg) {
+            refetchBusy = false;
+            if (!refetchEl) return; // destroyed mid-flight
+            refetchEl.classList.remove("lyra-refetch-busy");
+            refetchEl.textContent = "Wrong lyrics?";
+            if (msg && typeof msg === "string") toast(msg);
+          };
+          Promise.resolve().then(onRefetch).then(settle, function () { settle("Something went wrong"); });
+        });
+        root.appendChild(refetchEl);
+      }
       mount.appendChild(root);
       if (S.background && Lyra.Background) { try { bg = Lyra.Background.attach(root); } catch (e) { bg = null; } }
       if (bg && pendingCover) { try { bg.setCover(pendingCover[0], pendingCover[1]); } catch (e) {} pendingCover = null; }
@@ -266,6 +306,15 @@
       if (window.ResizeObserver) { ro = new ResizeObserver(queueMeasure); ro.observe(viewport); }
       else window.addEventListener("resize", queueMeasure);
       if (document.fonts && document.fonts.ready) document.fonts.ready.then(queueMeasure);
+    }
+
+    function toast(msg) {
+      if (destroyed || !root) return;
+      if (!toastEl) { toastEl = el("div", "lyra-toast"); root.appendChild(toastEl); }
+      toastEl.textContent = msg;
+      toastEl.classList.add("lyra-toast-on");
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { if (toastEl) toastEl.classList.remove("lyra-toast-on"); }, 2600);
     }
 
     function status(msg) {
@@ -1015,10 +1064,12 @@
         content && (content.textContent = "");
         items = [];
         status("No lyrics for this track");
+        if (refetchEl) refetchEl.classList.remove("lyra-refetch-on");
         return false;
       }
       build();
       resync();
+      if (refetchEl) refetchEl.classList.add("lyra-refetch-on");
       return true;
     }
 
@@ -1029,8 +1080,9 @@
       else window.removeEventListener("resize", queueMeasure);
       document.removeEventListener("visibilitychange", onVisibility);
       if (bg && bg.destroy) { try { bg.destroy(); } catch (e) {} }
+      if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
       if (root && root.parentNode) root.parentNode.removeChild(root);
-      root = viewport = canvas = content = resumeEl = null;
+      root = viewport = canvas = content = resumeEl = refetchEl = toastEl = null;
       items = []; lagged = []; marked = []; cooling = [];
     }
 
@@ -1045,6 +1097,7 @@
       remeasure: queueMeasure,
       setCover: function (url, accent) { if (bg && bg.setCover) bg.setCover(url, accent); else pendingCover = [url, accent]; },
       setOffset: function (ms) { S.timingOffsetMs = ms | 0; },
+      toast: toast,
       stats: function () { return { frames: stat.frames, styleWrites: stat.styleWrites, lastMs: stat.lastMs, worstMs: stat.worstMs, items: items.length, anchor: anchor }; },
       get settings() { return S; },
       get lineCount() { return items.length; },

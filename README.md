@@ -21,6 +21,9 @@ var r = Lyra.create({
   isPlaying: function () { return player.playing; },
   onSeek: function (ms) { player.seekTo(ms); },
   onClose: function () { ... },                 // optional, adds an X button
+  onRefetch: function () { ... },               // optional, adds a "Wrong lyrics?" pill.
+                                                // Do your re-fetch + r.load(newLyrics), then
+                                                // resolve with a short message to toast (or null)
 });
 r.load(ttmlString);     // or LRC, or a Qobuzify /v2/track response - it sniffs
 r.setCover(artUrl);

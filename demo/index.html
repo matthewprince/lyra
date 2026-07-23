@@ -116,6 +116,10 @@
     getPos: getPos,
     isPlaying: function () { return clock.playing; },
     onSeek: function (ms) { seek(ms); if (!clock.playing) play(); },
+    // demo-only: fake the host's refetch flow so the pill + toast are testable
+    onRefetch: function () {
+      return new Promise(function (r) { setTimeout(function () { r("Switched to a different version"); }, 900); });
+    },
   });
   window.lyra = lyra; // for poking at stats() from the console
 
