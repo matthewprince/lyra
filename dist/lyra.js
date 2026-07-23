@@ -1,4 +1,4 @@
-/* Lyra lyric renderer - built 2026-07-23T08:09:22Z */
+/* Lyra lyric renderer - built 2026-07-23T08:16:05Z */
 // Lyra parsers - TTML / lyrics-JSON / LRC in, one internal model out.
 // All times in MILLISECONDS (upstream JSON is seconds, converted here).
 //
@@ -511,6 +511,10 @@
 // scale back on these - the old 1.09 hold swell grew long words ~10px sideways
 // and glued them to their neighbors ("thatsomeone"). swell lives in the envelope now.
 ".lyra-s,.lyra-gs{display:inline-block;}" +
+// wave exit: when a letter-wave word ends, per-frame writes stop and this class
+// lets the letters ease home + the glow fade out in its bell shape (instead of
+// the whole word flashing to full bloom then cutting - the old exit bug)
+".lyra-w-waveout .lyra-s,.lyra-w-waveout .lyra-gs{transition:scale .3s ease,translate .3s ease,opacity .35s ease;}" +
 ".lyra-line .lyra-s{color:var(--lyra-dim,rgba(255,255,255,.92));}" +
 ".lyra-line.lyra-active .lyra-s{color:var(--lyra-unsung,rgba(255,255,255,.34));}" +
 ".lyra-line.lyra-active .lyra-w-sung .lyra-s,.lyra-line.lyra-active .lyra-s.lyra-s-sung{color:var(--lyra-sung,#fff);}" +
@@ -1173,7 +1177,7 @@
     }
     function resetWord(wm) {
       if (wm._ws !== -1) { wm._ws = -1; wm.el.classList.remove("lyra-w-cur", "lyra-w-sung"); }
-      wm.el.classList.remove("lyra-w-hold");
+      wm.el.classList.remove("lyra-w-hold", "lyra-w-waveout");
       uncool(wm);
       applyLift(wm, 0, 0, 0);
       for (var s = 0; s < wm.syls.length; s++) resetSyl(wm.syls[s]);
@@ -1276,7 +1280,7 @@
           applyLift(c.wm, 0, 1, 0); // lands fully sung: rests at scale 1
           var wm = c.wm, defer = c.deferReset;
           cooling.splice(i, 1);
-          wm.el.classList.remove("lyra-w-hold");
+          wm.el.classList.remove("lyra-w-hold", "lyra-w-waveout");
           if (defer) resetWord(wm); // class/fill cleanup we postponed so the drop could play
           continue;
         }
@@ -1313,14 +1317,32 @@
           wm.el.classList.toggle("lyra-w-sung", wstate === 2);
           if (wstate === 1) {
             uncool(wm);
+            wm.el.classList.remove("lyra-w-waveout"); // back mid-drop: per-frame writes resume
             if (en - st >= HOLD_MS) wm.el.classList.add("lyra-w-hold");
           } else if (wstate === 0) { // back to idle (seek/jump-back): instant, no drop
             uncool(wm);
+            wm.el.classList.remove("lyra-w-waveout");
             applyLift(wm, 0, 0, 0);
             for (var r0 = 0; r0 < wm.syls.length; r0++) resetSyl(wm.syls[r0]);
           } else { // sung
-            if (was === 1) coolWord(wm, now); // finished naturally: let it fall on its own
-            else { uncool(wm); applyLift(wm, 0, 1, 0); } // jumped straight to sung: rest at full size
+            if (was === 1) {
+              coolWord(wm, now); // finished naturally: let it fall on its own
+              if (wm.wave) { // wave exit: ease the letters home, fade the bell out
+                wm.el.classList.add("lyra-w-waveout");
+                for (var r1 = 0; r1 < wm.syls.length; r1++) {
+                  var Ws = wm.syls[r1];
+                  if (Ws._ss !== -1) {
+                    Ws._ss = -1;
+                    Ws.el.classList.remove("lyra-s-cur", "lyra-s-sung");
+                    if (Ws.gel) Ws.gel.classList.remove("lyra-s-cur", "lyra-s-sung");
+                  }
+                  if (Ws._f !== -1) { Ws._f = -1; Ws.el.style.removeProperty("--fill"); if (Ws.gel) Ws.gel.style.removeProperty("--fill"); }
+                  if (Ws._wv !== -1) { Ws._wv = -1; Ws.el.style.scale = ""; Ws.el.style.translate = ""; }
+                  if (Ws.gel) { Ws._wg = 0; Ws.gel.style.opacity = "0"; } // explicit 0 so the transition has a target
+                }
+                continue;
+              }
+            } else { uncool(wm); applyLift(wm, 0, 1, 0); } // jumped straight to sung: rest at full size
             for (var r = 0; r < wm.syls.length; r++) resetSyl(wm.syls[r]);
           }
         }
