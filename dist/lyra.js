@@ -1,4 +1,4 @@
-/* Lyra lyric renderer - built 2026-07-23T08:16:05Z */
+/* Lyra lyric renderer - built 2026-07-23T08:25:57Z */
 // Lyra parsers - TTML / lyrics-JSON / LRC in, one internal model out.
 // All times in MILLISECONDS (upstream JSON is seconds, converted here).
 //
@@ -641,6 +641,7 @@
     var staticMode = false;      // unsynced lyrics: plain sheet, no states/follow
     var resumeEl = null, resumeShown = false;
     var refetchEl = null, refetchBusy = false, toastEl = null, toastTimer = null;
+    var waveSylMin = 650;        // per-track: held means exceptional FOR THIS SONG
     var marked = [];             // items currently carrying distance/near classes
     var vh = 0, maxScroll = 0, measured = false, measureQueued = false;
     var ro = null;
@@ -750,11 +751,15 @@
       var w = el("span", "lyra-w");
       // lift amplitude from word duration: <=~180ms -> 0.25 (barely moves), >=600ms -> 1
       var pop = reduced ? 0 : Math.max(0.25, Math.min(1, ((word.end - word.start) - 120) / 480));
-      // hold-tier words split into LETTERS so the swell can travel across them.
-      // each syllable's real time is subdivided across its own letters (keeps the
-      // actual sung rhythm, unlike a flat even split across the whole word).
+      // the wave is for held NOTES, not long words: a real melisma lives in one
+      // long syllable. a multi-syllable word that merely adds up past the bar
+      // ("constellation" at a normal pace) must NOT ripple. so: total >= 1s AND
+      // the longest single syllable >= 650ms. letters then subdivide each
+      // syllable's real time (keeps the sung rhythm, not a flat even split).
       var pieces = word.syllables, wave = false;
-      if (S.letterWave && !reduced && (word.end - word.start) >= HOLD_MS && !RTL_CHARS.test(word.text)) {
+      var longestSyl = 0;
+      for (var g9 = 0; g9 < word.syllables.length; g9++) longestSyl = Math.max(longestSyl, word.syllables[g9].end - word.syllables[g9].start);
+      if (S.letterWave && !reduced && (word.end - word.start) >= 1000 && longestSyl >= waveSylMin && !RTL_CHARS.test(word.text)) {
         var glyphs = 0;
         for (var g0 = 0; g0 < word.syllables.length; g0++) glyphs += Array.from(word.syllables[g0].text).length;
         if (glyphs >= 3 && glyphs <= 12) {
@@ -829,6 +834,20 @@
 
       var lines = (model && model.lines) || [];
       var wordMode = model && model.timing === "word";
+      // wave gate is track-relative: a 900ms note is a held note in a fast rap,
+      // background noise in a ballad where every syllable runs long
+      if (wordMode) {
+        var sylDurs = [];
+        for (var sd = 0; sd < lines.length; sd++) {
+          var lw = lines[sd].words || [];
+          for (var sw2 = 0; sw2 < lw.length; sw2++)
+            for (var ss2 = 0; ss2 < lw[sw2].syllables.length; ss2++)
+              sylDurs.push(lw[sw2].syllables[ss2].end - lw[sw2].syllables[ss2].start);
+        }
+        sylDurs.sort(function (a, b) { return a - b; });
+        var medSyl = sylDurs.length ? sylDurs[sylDurs.length >> 1] : 0;
+        waveSylMin = Math.max(650, medSyl * 1.8);
+      }
       staticMode = !!(model && model.timing === "none");
       root.classList.toggle("lyra-static", staticMode);
       root.classList.toggle("lyra-ripple", !wordMode && !staticMode && !!S.lineRipple);
