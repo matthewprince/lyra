@@ -1,4 +1,4 @@
-/* Lyra lyric renderer - built 2026-07-22T08:49:32Z */
+/* Lyra lyric renderer - built 2026-07-23T05:31:24Z */
 // Lyra parsers - TTML / lyrics-JSON / LRC in, one internal model out.
 // All times in MILLISECONDS (upstream JSON is seconds, converted here).
 //
@@ -515,6 +515,10 @@
 // RTL sweeps travel right-to-left (pairs with dir=auto on lines)
 ".lyra-line:dir(rtl) .lyra-s.lyra-s-cur{" +
 "background-image:linear-gradient(270deg,var(--lyra-sung,#fff) calc(var(--fill) - 18%),var(--lyra-unsung,rgba(255,255,255,.34)) var(--fill));}" +
+// line-timed ripple: words brighten INSTANTLY (no gradient sweep - that would
+// read as fake karaoke at a made-up speed); the stagger + lift do the motion
+".lyra-ripple .lyra-line.lyra-active .lyra-s.lyra-s-cur{background-image:none;color:var(--lyra-sung,#fff);}" +
+".lyra-ripple .lyra-line .lyra-gs.lyra-s-cur{background-image:none;color:var(--lyra-sung,#fff);}" +
 // static sheets (unsynced lyrics): a plain readable list, no states
 ".lyra-static .lyra-line{opacity:.85;scale:1;filter:none!important;cursor:default;}" +
 // glow overlay = duplicate glyphs clipped to the sung part, static drop-shadow,
@@ -740,6 +744,7 @@
       var wordMode = model && model.timing === "word";
       staticMode = !!(model && model.timing === "none");
       root.classList.toggle("lyra-static", staticMode);
+      root.classList.toggle("lyra-ripple", !wordMode && !staticMode && !!S.lineRipple);
       var prevEnd = 0;
 
       for (var i = 0; i < lines.length; i++) {
