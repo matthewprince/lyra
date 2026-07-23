@@ -1,4 +1,4 @@
-/* Lyra lyric renderer - built 2026-07-23T05:31:24Z */
+/* Lyra lyric renderer - built 2026-07-23T05:33:09Z */
 // Lyra parsers - TTML / lyrics-JSON / LRC in, one internal model out.
 // All times in MILLISECONDS (upstream JSON is seconds, converted here).
 //
@@ -453,8 +453,9 @@
     graceMs: 350,           // hold a line active this long past its end
     interludeMinMs: 2600,   // min silent gap that earns interlude dots
     interludeLeadMs: 4000,  // dots before the first line if it starts later than this
-    lineRipple: true,       // line-timed tracks: synthesize a word stagger so lines
-                            // type in word-by-word instead of flipping on at once
+    lineRipple: false,      // line-timed tracks: synthesize a word stagger (typing
+                            // ripple). OFF: tried it, reads choppy - line mode looks
+                            // best as one clean whole-line brighten
     fontFamily: null,
     background: true,       // drive Lyra.Background if present
     closeButton: true,      // rendered when onClose is provided; set false to suppress
@@ -515,8 +516,11 @@
 // RTL sweeps travel right-to-left (pairs with dir=auto on lines)
 ".lyra-line:dir(rtl) .lyra-s.lyra-s-cur{" +
 "background-image:linear-gradient(270deg,var(--lyra-sung,#fff) calc(var(--fill) - 18%),var(--lyra-unsung,rgba(255,255,255,.34)) var(--fill));}" +
-// line-timed ripple: words brighten INSTANTLY (no gradient sweep - that would
-// read as fake karaoke at a made-up speed); the stagger + lift do the motion
+// line-timed DEFAULT: the whole active line brightens as one unit (the line
+// opacity/scale transitions carry the motion). No per-word anything.
+".lyra-linemode .lyra-line.lyra-active .lyra-s{color:var(--lyra-sung,#fff);}" +
+".lyra-linemode .lyra-line.lyra-active .lyra-s.lyra-s-cur{background-image:none;color:var(--lyra-sung,#fff);}" +
+// opt-in line ripple (lineRipple:true): words pop in staggered, still no sweep
 ".lyra-ripple .lyra-line.lyra-active .lyra-s.lyra-s-cur{background-image:none;color:var(--lyra-sung,#fff);}" +
 ".lyra-ripple .lyra-line .lyra-gs.lyra-s-cur{background-image:none;color:var(--lyra-sung,#fff);}" +
 // static sheets (unsynced lyrics): a plain readable list, no states
@@ -745,6 +749,7 @@
       staticMode = !!(model && model.timing === "none");
       root.classList.toggle("lyra-static", staticMode);
       root.classList.toggle("lyra-ripple", !wordMode && !staticMode && !!S.lineRipple);
+      root.classList.toggle("lyra-linemode", !wordMode && !staticMode && !S.lineRipple);
       var prevEnd = 0;
 
       for (var i = 0; i < lines.length; i++) {
