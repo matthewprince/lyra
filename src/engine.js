@@ -436,7 +436,7 @@
         }
         sylDurs.sort(function (a, b) { return a - b; });
         var medSyl = sylDurs.length ? sylDurs[sylDurs.length >> 1] : 0;
-        waveSylMin = Math.max(650, medSyl * 1.8);
+        waveSylMin = Math.max(650, medSyl * 1.6);
       }
       staticMode = !!(model && model.timing === "none");
       root.classList.toggle("lyra-static", staticMode);
@@ -787,6 +787,7 @@
     function resetWord(wm) {
       if (wm._ws !== -1) { wm._ws = -1; wm.el.classList.remove("lyra-w-cur", "lyra-w-sung"); }
       wm.el.classList.remove("lyra-w-hold", "lyra-w-waveout");
+      wm._wx = null; wm._wt = null;
       uncool(wm);
       applyLift(wm, 0, 0, 0);
       for (var s = 0; s < wm.syls.length; s++) resetSyl(wm.syls[s]);
@@ -937,6 +938,7 @@
             if (was === 1) {
               coolWord(wm, now); // finished naturally: let it fall on its own
               if (wm.wave) { // wave exit: ease the letters home, fade the bell out
+                wm._wx = null; wm._wt = null;
                 wm.el.classList.add("lyra-w-waveout");
                 for (var r1 = 0; r1 < wm.syls.length; r1++) {
                   var Ws = wm.syls[r1];
@@ -987,19 +989,32 @@
           // the state flips to sung, so the edge exits instead of popping away
           if (ss === 1) setSylFill(sy, ((pos - sy.start) / Math.max(1, sy.end - sy.start)) * 118);
         }
-        // letter wave (hold words split into letters): a swell travels across the
-        // word centred on the letter being sung. scale falloff is a sharp bell,
-        // glow a wider one; letters behind keep a low residual glow.
+        // letter wave (hold words split into letters): a swell GLIDES across the
+        // word. the bell centre is a continuous position (fraction inside the
+        // current letter) chased by a smoother - a discrete letter index made the
+        // bump hop at ~7Hz, which read as vibration, not a wave.
         if (wm.wave) {
-          var act = -1;
-          for (var l0 = 0; l0 < wm.syls.length; l0++) { if (pos >= wm.syls[l0].start) act = l0; else break; }
+          var n = wm.syls.length, x;
+          if (pos <= wm.syls[0].start) x = -0.6;
+          else if (pos >= wm.syls[n - 1].end) x = n - 0.4;
+          else {
+            x = n - 0.4;
+            for (var l0 = 0; l0 < n; l0++) {
+              var L0 = wm.syls[l0];
+              if (pos < L0.end) { x = l0 + clamp((pos - L0.start) / Math.max(1, L0.end - L0.start), 0, 1); break; }
+            }
+          }
+          var wdt = wm._wt == null ? 16.7 : Math.min(64, now - wm._wt);
+          wm._wt = now;
+          if (wm._wx == null) wm._wx = x;
+          wm._wx += (x - wm._wx) * Math.min(1, wdt * 0.011); // ~90ms chase
           var wq = Math.min(1, wm._lift);
-          for (var l1 = 0; l1 < wm.syls.length; l1++) {
-            var Ls = wm.syls[l1], d = Math.abs(l1 - act);
-            var f = act < 0 ? 0 : 1 / (1 + Math.pow(d, 2.8));
-            var gf = act < 0 ? 0 : 1 / (1 + 0.9 * d);
-            var lsc = Math.round((1 + 0.14 * f * wm.pop) * 100) / 100;
-            var lty = Math.round(-0.022 * f * wm.pop * 1000) / 1000;
+          for (var l1 = 0; l1 < n; l1++) {
+            var Ls = wm.syls[l1], d = Math.abs(l1 - wm._wx);
+            var f = 1 / (1 + Math.pow(d, 2.2));   // wide bell: neighbours join in
+            var gf = 1 / (1 + 0.75 * d);
+            var lsc = Math.round((1 + 0.22 * f * wm.pop) * 200) / 200;
+            var lty = Math.round(-0.05 * f * wm.pop * 1000) / 1000;
             var lkey = lsc * 10 + lty;
             if (Ls._wv !== lkey) {
               Ls._wv = lkey;
@@ -1008,7 +1023,7 @@
               stat.styleWrites++;
             }
             if (Ls.gel) {
-              var lop = Math.round(Math.min(1, (0.2 + 0.8 * gf) * wq) * 50) / 50;
+              var lop = Math.round(Math.min(1, (0.15 + 0.85 * gf) * wq) * 50) / 50;
               if (Ls._wg !== lop) {
                 Ls._wg = lop;
                 Ls.gel.style.opacity = lop <= 0 ? "" : String(lop);
