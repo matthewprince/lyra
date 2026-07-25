@@ -19,6 +19,10 @@
 "@keyframes lyra-bg-b{from{transform:rotate(360deg) translate(-8vmax,2vmax) scale(1.25);}50%{transform:rotate(180deg) translate(-8vmax,2vmax) scale(1.05);}to{transform:rotate(0deg) translate(-8vmax,2vmax) scale(1.25);}}" +
 ".lyra-bg-scrim{position:absolute;inset:0;" +
 "background:radial-gradient(ellipse at 50% 40%,rgba(0,0,0,.28) 0%,rgba(0,0,0,.66) 100%),rgba(8,8,12,.38);}" +
+// audio-reactive wash: brightens with the track's energy curve (opacity-only,
+// written per-frame by pulse() - deliberately NO transition on it)
+".lyra-bg-energy{position:absolute;inset:0;pointer-events:none;" +
+"background:radial-gradient(ellipse at 50% 42%,rgba(255,255,255,.17) 0%,transparent 62%);opacity:0;}" +
 "@media (prefers-reduced-motion:reduce){.lyra-bg-layer{animation:none!important;}}";
 
   function injectCSS() {
@@ -73,26 +77,81 @@
       var holder = document.createElement("div");
       holder.className = "lyra-bg";
       rootEl.insertBefore(holder, rootEl.firstChild);
+      var energyEl = document.createElement("div");
+      energyEl.className = "lyra-bg-energy";
       var scrim = document.createElement("div");
       scrim.className = "lyra-bg-scrim";
-      var curGroup = null, token = 0, destroyed = false;
+      var curGroup = null, curLayers = null, token = 0, destroyed = false;
+
+      // audio-reactive state (fed by setAnalysis, driven by pulse per frame)
+      var anBars = null, anEnergy = null, anStep = 250, barIdx = 0, lastPos = -1;
+      var wScale = -1, wWash = -1, wLay = -1;
 
       function show(art) {
         if (destroyed) return;
         var grp = document.createElement("div");
         grp.className = "lyra-bg-grp";
-        grp.appendChild(makeLayer(art.canvas, "lyra-bg-a"));
-        grp.appendChild(makeLayer(art.canvas, "lyra-bg-b"));
+        var la = makeLayer(art.canvas, "lyra-bg-a");
+        var lb = makeLayer(art.canvas, "lyra-bg-b");
+        grp.appendChild(la);
+        grp.appendChild(lb);
         holder.appendChild(grp);
+        holder.appendChild(energyEl); // stays above whichever groups exist
         holder.appendChild(scrim);
         var old = curGroup;
         curGroup = grp;
+        curLayers = [{ el: la, base: 0.85 }, { el: lb, base: 0.6 }];
+        wLay = -1; wScale = -1;
         // double rAF or the transition never starts and the cover hard-cuts
         requestAnimationFrame(function () { requestAnimationFrame(function () { grp.classList.add("lyra-bg-in"); }); });
         if (old) setTimeout(function () { old.remove(); }, 1300);
       }
 
+      function energyAt(pos) {
+        if (!anEnergy || !anEnergy.length) return 0.5;
+        var x = pos / anStep;
+        var i = Math.floor(x);
+        if (i < 0) return anEnergy[0] / 100;
+        if (i >= anEnergy.length - 1) return anEnergy[anEnergy.length - 1] / 100;
+        var f = x - i;
+        return (anEnergy[i] * (1 - f) + anEnergy[i + 1] * f) / 100;
+      }
+
+      function pulse(pos) {
+        if (destroyed || !anBars) return;
+        if (pos < lastPos - 400) barIdx = 0; // seek back: rescan
+        lastPos = pos;
+        while (barIdx + 1 < anBars.length && anBars[barIdx + 1][0] <= pos) barIdx++;
+        var bar = anBars[barIdx];
+        var env = 0;
+        if (bar && pos >= bar[0]) {
+          var bp = (pos - bar[0]) / Math.max(1, bar[1]);
+          if (bp < 1) { var r = 1 - bp; env = r * r * (bar[2] || 0.5); } // thump at the bar line, decay across it
+        }
+        var e = energyAt(pos);
+        // group breath: bar thump scaled by how loud the song is right now
+        var sc = Math.round((1 + 0.034 * env * (0.35 + 0.65 * e)) * 500) / 500;
+        if (sc !== wScale && curGroup) { wScale = sc; curGroup.style.scale = sc === 1 ? "" : String(sc); }
+        // energy wash + layer brightness follow the loudness curve
+        var wash = Math.round(e * e * 0.5 * 50) / 50; // quadratic: quiet stays dark
+        if (wash !== wWash) { wWash = wash; energyEl.style.opacity = wash <= 0 ? "" : String(wash); }
+        var lm = Math.round((0.62 + 0.38 * e) * 50) / 50;
+        if (lm !== wLay && curLayers) {
+          wLay = lm;
+          for (var i = 0; i < curLayers.length; i++)
+            curLayers[i].el.style.opacity = (curLayers[i].base * lm).toFixed(3);
+        }
+      }
+
       return {
+        setAnalysis: function (a) {
+          anBars = (a && (a.bars && a.bars.length ? a.bars : a.beats)) || null;
+          anEnergy = (a && a.energy && a.energy.values) || null;
+          anStep = (a && a.energy && a.energy.stepMs) || 250;
+          barIdx = 0; lastPos = -1; wScale = -1; wWash = -1; wLay = -1;
+          if (!anBars && curGroup) { curGroup.style.scale = ""; energyEl.style.opacity = ""; }
+        },
+        pulse: pulse,
         setCover: function (url, accent) {
           var my = ++token;
           if (!url) { show(fallbackArt(accent)); return; }

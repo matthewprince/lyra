@@ -146,7 +146,7 @@
 "opacity:0;scale:.6;transform-origin:left center;transition:opacity .4s ease,scale .5s cubic-bezier(.3,.7,.25,1.15);}" +
 ".lyra-int.lyra-active{opacity:1;scale:1;}" +
 ".lyra-int.lyra-int-exit{opacity:0;scale:1.18;}" +
-".lyra-int-dots{display:inline-flex;gap:.3em;animation:lyra-breathe 2.2s ease-in-out infinite alternate;animation-play-state:paused;}" +
+".lyra-int-dots{display:inline-flex;gap:.3em;animation:lyra-breathe var(--lyra-breathe,2.2s) ease-in-out infinite alternate;animation-play-state:paused;}" +
 ".lyra-int.lyra-active .lyra-int-dots{animation-play-state:running;}" +
 ".lyra-dot{width:.32em;height:.32em;border-radius:50%;background:#fff;font-size:clamp(26px,3.3vw,52px);}" +
 ".lyra-dot:nth-child(1){opacity:clamp(.22,calc(var(--ifill,0)*3 + .22),1);}" +
@@ -232,6 +232,7 @@
     var resumeEl = null, resumeShown = false;
     var refetchEl = null, refetchBusy = false, toastEl = null, toastTimer = null;
     var waveSylMin = 650;        // per-track: held means exceptional FOR THIS SONG
+    var analysisOn = false;      // audio-analysis fed in: bg pulses with the song
     var marked = [];             // items currently carrying distance/near classes
     var vh = 0, maxScroll = 0, measured = false, measureQueued = false;
     var ro = null;
@@ -1113,6 +1114,7 @@
       if (userUntil && now >= userUntil) { userUntil = 0; retarget(false); }
 
       if (measured) stepScroll(now, dtMs == null ? 16.7 : dtMs);
+      if (analysisOn && bg && bg.pulse) bg.pulse(pos);
 
       stat.frames++;
       stat.lastMs = performance.now() - t0;
@@ -1247,6 +1249,17 @@
       status: status,
       remeasure: queueMeasure,
       setCover: function (url, accent) { if (bg && bg.setCover) bg.setCover(url, accent); else pendingCover = [url, accent]; },
+      setAnalysis: function (a) {
+        var ok = !!(a && a.available !== false && ((a.bars && a.bars.length) || (a.beats && a.beats.length)));
+        analysisOn = ok;
+        if (bg && bg.setAnalysis) bg.setAnalysis(ok ? a : null);
+        // interlude dots breathe at the song's tempo (4 beats per cycle)
+        if (root) {
+          var bpm = ok && a.summary && a.summary.tempo;
+          if (bpm) root.style.setProperty("--lyra-breathe", clamp(4 * 60000 / bpm, 1200, 3200) + "ms");
+          else root.style.removeProperty("--lyra-breathe");
+        }
+      },
       setOffset: function (ms) { S.timingOffsetMs = ms | 0; },
       toast: toast,
       stats: function () { return { frames: stat.frames, styleWrites: stat.styleWrites, lastMs: stat.lastMs, worstMs: stat.worstMs, items: items.length, anchor: anchor }; },

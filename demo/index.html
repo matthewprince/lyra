@@ -80,9 +80,13 @@
   </select>
 </div>
 
-<script src="../src/ttml.js"></script>
-<script src="../src/engine.js"></script>
-<script src="../src/bg.js"></script>
+<script>
+// dev loader: cache-bust the sources so edits always show up (chrome heuristic
+// caching served a stale bg.js once and cost a debugging round)
+["../src/ttml.js", "../src/engine.js", "../src/bg.js"].forEach(function (s) {
+  document.write('<script src="' + s + '?t=' + Date.now() + '"><\/script>');
+});
+</script>
 <script>
 (function () {
   "use strict";
@@ -168,6 +172,7 @@
     fetch(path).then(function (r) { return r.text(); }).then(function (txt) {
       var model = Lyra.parseTTML(txt);
       if (!model) { lyra.status("Failed to parse " + path); return; }
+      lyra.setAnalysis(null); // samples have no analysis
       setTrack(title, artist, model);
     });
   }
@@ -183,6 +188,12 @@
       var tn = (j.track && j.track.name) || name;
       var ta = (j.track && j.track.artist) || artist;
       setTrack(tn, ta, model);
+      // audio-reactive background: fetch the analysis too (best-effort)
+      lyra.setAnalysis(null);
+      var au = "https://api.qobuzify.app/v2/analysis?name=" + encodeURIComponent(name) + "&artist=" + encodeURIComponent(artist);
+      fetch(au).then(function (r) { return r.json(); }).then(function (aj) {
+        if (aj && aj.ok && aj.analysis && aj.analysis.available) lyra.setAnalysis(aj.analysis);
+      }).catch(function () {});
     }).catch(function (e) { lyra.status("API error: " + e.message); });
   }
 

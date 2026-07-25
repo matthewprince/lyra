@@ -1,4 +1,4 @@
-/* Lyra lyric renderer - built 2026-07-25T04:58:51Z */
+/* Lyra lyric renderer - built 2026-07-25T05:12:57Z */
 // Lyra parsers - TTML / lyrics-JSON / LRC in, one internal model out.
 // All times in MILLISECONDS (upstream JSON is seconds, converted here).
 //
@@ -556,7 +556,7 @@
 "opacity:0;scale:.6;transform-origin:left center;transition:opacity .4s ease,scale .5s cubic-bezier(.3,.7,.25,1.15);}" +
 ".lyra-int.lyra-active{opacity:1;scale:1;}" +
 ".lyra-int.lyra-int-exit{opacity:0;scale:1.18;}" +
-".lyra-int-dots{display:inline-flex;gap:.3em;animation:lyra-breathe 2.2s ease-in-out infinite alternate;animation-play-state:paused;}" +
+".lyra-int-dots{display:inline-flex;gap:.3em;animation:lyra-breathe var(--lyra-breathe,2.2s) ease-in-out infinite alternate;animation-play-state:paused;}" +
 ".lyra-int.lyra-active .lyra-int-dots{animation-play-state:running;}" +
 ".lyra-dot{width:.32em;height:.32em;border-radius:50%;background:#fff;font-size:clamp(26px,3.3vw,52px);}" +
 ".lyra-dot:nth-child(1){opacity:clamp(.22,calc(var(--ifill,0)*3 + .22),1);}" +
@@ -642,6 +642,7 @@
     var resumeEl = null, resumeShown = false;
     var refetchEl = null, refetchBusy = false, toastEl = null, toastTimer = null;
     var waveSylMin = 650;        // per-track: held means exceptional FOR THIS SONG
+    var analysisOn = false;      // audio-analysis fed in: bg pulses with the song
     var marked = [];             // items currently carrying distance/near classes
     var vh = 0, maxScroll = 0, measured = false, measureQueued = false;
     var ro = null;
@@ -1523,6 +1524,7 @@
       if (userUntil && now >= userUntil) { userUntil = 0; retarget(false); }
 
       if (measured) stepScroll(now, dtMs == null ? 16.7 : dtMs);
+      if (analysisOn && bg && bg.pulse) bg.pulse(pos);
 
       stat.frames++;
       stat.lastMs = performance.now() - t0;
@@ -1657,6 +1659,17 @@
       status: status,
       remeasure: queueMeasure,
       setCover: function (url, accent) { if (bg && bg.setCover) bg.setCover(url, accent); else pendingCover = [url, accent]; },
+      setAnalysis: function (a) {
+        var ok = !!(a && a.available !== false && ((a.bars && a.bars.length) || (a.beats && a.beats.length)));
+        analysisOn = ok;
+        if (bg && bg.setAnalysis) bg.setAnalysis(ok ? a : null);
+        // interlude dots breathe at the song's tempo (4 beats per cycle)
+        if (root) {
+          var bpm = ok && a.summary && a.summary.tempo;
+          if (bpm) root.style.setProperty("--lyra-breathe", clamp(4 * 60000 / bpm, 1200, 3200) + "ms");
+          else root.style.removeProperty("--lyra-breathe");
+        }
+      },
       setOffset: function (ms) { S.timingOffsetMs = ms | 0; },
       toast: toast,
       stats: function () { return { frames: stat.frames, styleWrites: stat.styleWrites, lastMs: stat.lastMs, worstMs: stat.worstMs, items: items.length, anchor: anchor }; },
@@ -1686,6 +1699,10 @@
 "@keyframes lyra-bg-b{from{transform:rotate(360deg) translate(-8vmax,2vmax) scale(1.25);}50%{transform:rotate(180deg) translate(-8vmax,2vmax) scale(1.05);}to{transform:rotate(0deg) translate(-8vmax,2vmax) scale(1.25);}}" +
 ".lyra-bg-scrim{position:absolute;inset:0;" +
 "background:radial-gradient(ellipse at 50% 40%,rgba(0,0,0,.28) 0%,rgba(0,0,0,.66) 100%),rgba(8,8,12,.38);}" +
+// audio-reactive wash: brightens with the track's energy curve (opacity-only,
+// written per-frame by pulse() - deliberately NO transition on it)
+".lyra-bg-energy{position:absolute;inset:0;pointer-events:none;" +
+"background:radial-gradient(ellipse at 50% 42%,rgba(255,255,255,.17) 0%,transparent 62%);opacity:0;}" +
 "@media (prefers-reduced-motion:reduce){.lyra-bg-layer{animation:none!important;}}";
 
   function injectCSS() {
@@ -1740,26 +1757,81 @@
       var holder = document.createElement("div");
       holder.className = "lyra-bg";
       rootEl.insertBefore(holder, rootEl.firstChild);
+      var energyEl = document.createElement("div");
+      energyEl.className = "lyra-bg-energy";
       var scrim = document.createElement("div");
       scrim.className = "lyra-bg-scrim";
-      var curGroup = null, token = 0, destroyed = false;
+      var curGroup = null, curLayers = null, token = 0, destroyed = false;
+
+      // audio-reactive state (fed by setAnalysis, driven by pulse per frame)
+      var anBars = null, anEnergy = null, anStep = 250, barIdx = 0, lastPos = -1;
+      var wScale = -1, wWash = -1, wLay = -1;
 
       function show(art) {
         if (destroyed) return;
         var grp = document.createElement("div");
         grp.className = "lyra-bg-grp";
-        grp.appendChild(makeLayer(art.canvas, "lyra-bg-a"));
-        grp.appendChild(makeLayer(art.canvas, "lyra-bg-b"));
+        var la = makeLayer(art.canvas, "lyra-bg-a");
+        var lb = makeLayer(art.canvas, "lyra-bg-b");
+        grp.appendChild(la);
+        grp.appendChild(lb);
         holder.appendChild(grp);
+        holder.appendChild(energyEl); // stays above whichever groups exist
         holder.appendChild(scrim);
         var old = curGroup;
         curGroup = grp;
+        curLayers = [{ el: la, base: 0.85 }, { el: lb, base: 0.6 }];
+        wLay = -1; wScale = -1;
         // double rAF or the transition never starts and the cover hard-cuts
         requestAnimationFrame(function () { requestAnimationFrame(function () { grp.classList.add("lyra-bg-in"); }); });
         if (old) setTimeout(function () { old.remove(); }, 1300);
       }
 
+      function energyAt(pos) {
+        if (!anEnergy || !anEnergy.length) return 0.5;
+        var x = pos / anStep;
+        var i = Math.floor(x);
+        if (i < 0) return anEnergy[0] / 100;
+        if (i >= anEnergy.length - 1) return anEnergy[anEnergy.length - 1] / 100;
+        var f = x - i;
+        return (anEnergy[i] * (1 - f) + anEnergy[i + 1] * f) / 100;
+      }
+
+      function pulse(pos) {
+        if (destroyed || !anBars) return;
+        if (pos < lastPos - 400) barIdx = 0; // seek back: rescan
+        lastPos = pos;
+        while (barIdx + 1 < anBars.length && anBars[barIdx + 1][0] <= pos) barIdx++;
+        var bar = anBars[barIdx];
+        var env = 0;
+        if (bar && pos >= bar[0]) {
+          var bp = (pos - bar[0]) / Math.max(1, bar[1]);
+          if (bp < 1) { var r = 1 - bp; env = r * r * (bar[2] || 0.5); } // thump at the bar line, decay across it
+        }
+        var e = energyAt(pos);
+        // group breath: bar thump scaled by how loud the song is right now
+        var sc = Math.round((1 + 0.034 * env * (0.35 + 0.65 * e)) * 500) / 500;
+        if (sc !== wScale && curGroup) { wScale = sc; curGroup.style.scale = sc === 1 ? "" : String(sc); }
+        // energy wash + layer brightness follow the loudness curve
+        var wash = Math.round(e * e * 0.5 * 50) / 50; // quadratic: quiet stays dark
+        if (wash !== wWash) { wWash = wash; energyEl.style.opacity = wash <= 0 ? "" : String(wash); }
+        var lm = Math.round((0.62 + 0.38 * e) * 50) / 50;
+        if (lm !== wLay && curLayers) {
+          wLay = lm;
+          for (var i = 0; i < curLayers.length; i++)
+            curLayers[i].el.style.opacity = (curLayers[i].base * lm).toFixed(3);
+        }
+      }
+
       return {
+        setAnalysis: function (a) {
+          anBars = (a && (a.bars && a.bars.length ? a.bars : a.beats)) || null;
+          anEnergy = (a && a.energy && a.energy.values) || null;
+          anStep = (a && a.energy && a.energy.stepMs) || 250;
+          barIdx = 0; lastPos = -1; wScale = -1; wWash = -1; wLay = -1;
+          if (!anBars && curGroup) { curGroup.style.scale = ""; energyEl.style.opacity = ""; }
+        },
+        pulse: pulse,
         setCover: function (url, accent) {
           var my = ++token;
           if (!url) { show(fallbackArt(accent)); return; }
