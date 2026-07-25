@@ -15,6 +15,14 @@
 "border-radius:38%;filter:blur(56px) saturate(1.6);will-change:transform;}" +
 ".lyra-bg-a{animation:lyra-bg-a 80s linear infinite;opacity:.85;}" +
 ".lyra-bg-b{animation:lyra-bg-b 100s linear infinite;opacity:.6;}" +
+// with analysis, layer motion is JS-integrated (velocity rides the music) and
+// the keyframe drift gets out of the way
+".lyra-bg-live .lyra-bg-layer{animation:none;}" +
+// palette flow blobs: big soft colour fields from the cover's dominant colours,
+// orbiting independently - this is what makes the field ORGANIC instead of two
+// copies of the same texture spinning
+".lyra-bg-blob{position:absolute;left:50%;top:50%;width:95vmax;height:95vmax;margin:-47.5vmax 0 0 -47.5vmax;" +
+"border-radius:50%;pointer-events:none;will-change:transform;}" +
 "@keyframes lyra-bg-a{from{transform:rotate(0deg) translate(6vmax,0) scale(1);}50%{transform:rotate(180deg) translate(6vmax,0) scale(1.18);}to{transform:rotate(360deg) translate(6vmax,0) scale(1);}}" +
 "@keyframes lyra-bg-b{from{transform:rotate(360deg) translate(-8vmax,2vmax) scale(1.25);}50%{transform:rotate(180deg) translate(-8vmax,2vmax) scale(1.05);}to{transform:rotate(0deg) translate(-8vmax,2vmax) scale(1.25);}}" +
 ".lyra-bg-scrim{position:absolute;inset:0;" +
@@ -33,19 +41,35 @@
     document.head.appendChild(s);
   }
 
-  // crush the art to a tiny canvas; also grabs an average colour
+  // crush the art to a tiny canvas; also grabs an average colour + a small
+  // palette of saturated/bright pixels for the flow blobs
   function crush(img, size) {
     var c = document.createElement("canvas");
     c.width = c.height = size;
     var x = c.getContext("2d");
     x.drawImage(img, 0, 0, size, size);
-    var avg = [40, 40, 60];
+    var avg = [40, 40, 60], pal = [];
     try {
       var d = x.getImageData(0, 0, size, size).data, r = 0, g = 0, b = 0, n = d.length / 4;
-      for (var i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
+      var scored = [];
+      for (var i = 0; i < d.length; i += 4) {
+        r += d[i]; g += d[i + 1]; b += d[i + 2];
+        var mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
+        scored.push([mx - mn + mx * 0.4, d[i], d[i + 1], d[i + 2]]); // favour saturated + bright
+      }
       avg = [Math.round(r / n), Math.round(g / n), Math.round(b / n)];
+      scored.sort(function (p, q) { return q[0] - p[0]; });
+      // greedy pick with a minimum colour distance so the blobs actually differ
+      for (var s2 = 0; s2 < scored.length && pal.length < 4; s2++) {
+        var cand = scored[s2], ok = true;
+        for (var p2 = 0; p2 < pal.length; p2++) {
+          var dd = Math.abs(cand[1] - pal[p2][0]) + Math.abs(cand[2] - pal[p2][1]) + Math.abs(cand[3] - pal[p2][2]);
+          if (dd < 110) { ok = false; break; }
+        }
+        if (ok) pal.push([cand[1], cand[2], cand[3]]);
+      }
     } catch (e) {} // tainted canvas - fine, layers still render
-    return { canvas: c, avg: avg };
+    return { canvas: c, avg: avg, palette: pal };
   }
 
   function fallbackArt(accent) {
@@ -120,7 +144,26 @@
         holder.appendChild(scrim);
         var old = curGroup;
         curGroup = grp;
-        curLayers = [{ el: la, base: 0.85 }, { el: lb, base: 0.6 }];
+        // per-layer orbit params for the live (JS-driven) motion: counter-rotating,
+        // different radii/scales so the composition genuinely evolves
+        curLayers = [
+          { el: la, base: 0.85, ang: 0, dir: 1, vel: 13, orb: 6, sc: 1.12, _t: "" },
+          { el: lb, base: 0.6, ang: 140, dir: -1, vel: 18, orb: 8, sc: 1.28, _t: "" },
+        ];
+        // palette blobs ride between the layers and the wash
+        var pal = art.palette || [];
+        for (var bi = 0; bi < pal.length; bi++) {
+          var col = pal[bi];
+          var blob = document.createElement("div");
+          blob.className = "lyra-bg-blob";
+          blob.style.background = "radial-gradient(circle at 50% 50%, rgba(" + col[0] + "," + col[1] + "," + col[2] + ",.5) 0%, rgba(" + col[0] + "," + col[1] + "," + col[2] + ",0) 62%)";
+          grp.appendChild(blob);
+          curLayers.push({
+            el: blob, base: 0, blob: true,
+            ang: 90 * bi + 30, dir: bi % 2 ? -1 : 1,
+            vel: 20 + 9 * bi, orb: 10 + 5 * (bi % 3), sc: 0.9 + 0.25 * (bi % 2), _t: "",
+          });
+        }
         wLay = -1; wScale = -1;
         // double rAF or the transition never starts and the cover hard-cuts
         requestAnimationFrame(function () { requestAnimationFrame(function () { grp.classList.add("lyra-bg-in"); }); });
@@ -139,19 +182,35 @@
 
       function pulse(pos) {
         if (destroyed || (!anSegs && !anEnergy)) return; // degrade: energy-only data still animates
+        var dtL = lastPos < 0 ? 0 : Math.max(0, Math.min(100, pos - lastPos));
         var sc = 1;
         if (anSegs) {
           // level-meter ballistics on the real loudness envelope: instant-ish
           // attack, slow release. motion pumps WITH the audio; nothing strobes.
-          var dt = lastPos < 0 ? 16 : Math.max(0, Math.min(100, pos - lastPos));
           var L = (levelAt(pos) - dbLow) / Math.max(1, dbHigh - dbLow);
           L = L < 0 ? 0 : L > 1 ? 1 : L;
-          disp += (L - disp) * Math.min(1, dt / (L > disp ? 28 : 220));
+          disp += (L - disp) * Math.min(1, (dtL || 16) / (L > disp ? 28 : 220));
           // the pump: scale rides the meter (quadratic keeps quiet parts still)
           sc = Math.round((1 + 0.14 * disp * disp) * 500) / 500;
         }
         lastPos = pos;
         if (sc !== wScale && curGroup) { wScale = sc; curGroup.style.scale = sc === 1 ? "" : String(sc); }
+        // live flow: layer orbits integrate a velocity that rides the music.
+        // energy sets cruising speed, hits kick it. calibrated against the
+        // reference video: the field should visibly reorganize every ~10-15s
+        // in loud sections, and freeze when the music stops.
+        if (curLayers && dtL > 0) {
+          holder.classList.add("lyra-bg-live");
+          var e2 = energyAt(pos);
+          var flow = 0.25 + 0.95 * e2 + 1.6 * disp * disp; // 0.25x idle .. ~2.8x on hits
+          for (var li = 0; li < curLayers.length; li++) {
+            var Ly = curLayers[li];
+            Ly.ang += Ly.vel * Ly.dir * flow * (dtL / 1000);
+            var aq = Math.round(Ly.ang * 10) / 10;
+            var t = "rotate(" + aq + "deg) translate(" + Ly.orb + "vmax,0) scale(" + Ly.sc + ")";
+            if (t !== Ly._t) { Ly._t = t; Ly.el.style.transform = t; }
+          }
+        }
         // luminance strictly follows the SLOW energy curve (no per-hit light)
         var e = energyAt(pos);
         var wash = Math.round(Math.min(0.5, e * (0.12 + 0.35 * e)) * 50) / 50;
@@ -159,8 +218,10 @@
         var lm = Math.round(Math.min(1, 0.58 + 0.42 * e) * 50) / 50;
         if (lm !== wLay && curLayers) {
           wLay = lm;
-          for (var i = 0; i < curLayers.length; i++)
-            curLayers[i].el.style.opacity = (curLayers[i].base * lm).toFixed(3);
+          for (var i = 0; i < curLayers.length; i++) {
+            var CL = curLayers[i];
+            CL.el.style.opacity = CL.blob ? String(lm) : (CL.base * lm).toFixed(3);
+          }
         }
       }
 
