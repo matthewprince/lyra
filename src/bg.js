@@ -22,7 +22,7 @@
 // audio-reactive wash: brightens with the track's energy curve (opacity-only,
 // written per-frame by pulse() - deliberately NO transition on it)
 ".lyra-bg-energy{position:absolute;inset:0;pointer-events:none;" +
-"background:radial-gradient(ellipse at 50% 42%,rgba(255,255,255,.17) 0%,transparent 62%);opacity:0;}" +
+"background:radial-gradient(ellipse at 50% 42%,rgba(255,255,255,.27) 0%,transparent 68%);opacity:0;}" +
 "@media (prefers-reduced-motion:reduce){.lyra-bg-layer{animation:none!important;}}";
 
   function injectCSS() {
@@ -84,8 +84,26 @@
       var curGroup = null, curLayers = null, token = 0, destroyed = false;
 
       // audio-reactive state (fed by setAnalysis, driven by pulse per frame)
-      var anBars = null, anEnergy = null, anStep = 250, barIdx = 0, lastPos = -1;
+      var anBars = null, anBeats = null, anEnergy = null, anStep = 250;
+      var lastPos = -1;
       var wScale = -1, wWash = -1, wLay = -1;
+
+      function markerEnv(list, idxRef, pos, power) {
+        // sharp attack at the marker, decay across its duration. confidence only
+        // GATES (junk markers skipped) - scaling by it buried the whole effect,
+        // steady grooves ride at conf 0.1-0.4
+        var i = idxRef.i;
+        if (pos < lastPos - 400) i = 0;
+        while (i + 1 < list.length && list[i + 1][0] <= pos) i++;
+        idxRef.i = i;
+        var m = list[i];
+        if (!m || pos < m[0] || (m[2] || 1) < 0.1) return 0;
+        var p = (pos - m[0]) / Math.max(1, m[1]);
+        if (p >= 1) return 0;
+        var r = 1 - p;
+        return power === 3 ? r * r * r : r * r;
+      }
+      var barRef = { i: 0 }, beatRef = { i: 0 };
 
       function show(art) {
         if (destroyed) return;
@@ -118,24 +136,20 @@
       }
 
       function pulse(pos) {
-        if (destroyed || !anBars) return;
-        if (pos < lastPos - 400) barIdx = 0; // seek back: rescan
+        if (destroyed || (!anBars && !anBeats)) return;
+        var barEnv = anBars ? markerEnv(anBars, barRef, pos, 2) : 0;
+        var beatEnv = anBeats ? markerEnv(anBeats, beatRef, pos, 3) : 0;
         lastPos = pos;
-        while (barIdx + 1 < anBars.length && anBars[barIdx + 1][0] <= pos) barIdx++;
-        var bar = anBars[barIdx];
-        var env = 0;
-        if (bar && pos >= bar[0]) {
-          var bp = (pos - bar[0]) / Math.max(1, bar[1]);
-          if (bp < 1) { var r = 1 - bp; env = r * r * (bar[2] || 0.5); } // thump at the bar line, decay across it
-        }
         var e = energyAt(pos);
-        // group breath: bar thump scaled by how loud the song is right now
-        var sc = Math.round((1 + 0.034 * env * (0.35 + 0.65 * e)) * 500) / 500;
+        // breath: bars carry a real 5% swell, beats a small kick on top - both
+        // weighted by how loud the song is right now
+        var sc = Math.round((1 + (0.05 * barEnv + 0.012 * beatEnv) * (0.3 + 0.7 * e)) * 500) / 500;
         if (sc !== wScale && curGroup) { wScale = sc; curGroup.style.scale = sc === 1 ? "" : String(sc); }
-        // energy wash + layer brightness follow the loudness curve
-        var wash = Math.round(e * e * 0.5 * 50) / 50; // quadratic: quiet stays dark
+        // brightness: energy sets the floor, every beat flashes above it. this is
+        // the channel that actually reads as "reactive" on a blurred field
+        var wash = Math.round(Math.min(0.85, e * (0.18 + 0.5 * e) + 0.4 * e * beatEnv) * 50) / 50;
         if (wash !== wWash) { wWash = wash; energyEl.style.opacity = wash <= 0 ? "" : String(wash); }
-        var lm = Math.round((0.62 + 0.38 * e) * 50) / 50;
+        var lm = Math.round(Math.min(1, 0.55 + 0.45 * e + 0.18 * e * beatEnv) * 50) / 50;
         if (lm !== wLay && curLayers) {
           wLay = lm;
           for (var i = 0; i < curLayers.length; i++)
@@ -145,11 +159,12 @@
 
       return {
         setAnalysis: function (a) {
-          anBars = (a && (a.bars && a.bars.length ? a.bars : a.beats)) || null;
+          anBars = (a && a.bars && a.bars.length && a.bars) || null;
+          anBeats = (a && a.beats && a.beats.length && a.beats) || null;
           anEnergy = (a && a.energy && a.energy.values) || null;
           anStep = (a && a.energy && a.energy.stepMs) || 250;
-          barIdx = 0; lastPos = -1; wScale = -1; wWash = -1; wLay = -1;
-          if (!anBars && curGroup) { curGroup.style.scale = ""; energyEl.style.opacity = ""; }
+          barRef.i = 0; beatRef.i = 0; lastPos = -1; wScale = -1; wWash = -1; wLay = -1;
+          if (!anBars && !anBeats && curGroup) { curGroup.style.scale = ""; energyEl.style.opacity = ""; }
         },
         pulse: pulse,
         setCover: function (url, accent) {
