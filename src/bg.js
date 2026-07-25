@@ -215,12 +215,18 @@
               if (bp < 1) {
                 var br = 1 - bp;
                 target = br * Math.sqrt(br) * (0.22 + 0.78 * disp) * (1 + 0.6 * onset);
-                var cap = 0.3 + 0.7 * disp; // loudness caps the thump: quiet can't slam
+                // loudness caps the thump so quiet can't slam - but a strong grid
+                // (beatW) buys headroom: woozy-but-locked tracks still knock
+                var cap = Math.min(1, 0.3 + 0.7 * disp + 0.25 * beatW);
                 if (target > cap) target = cap;
               }
             }
           } else target = onset * (0.35 + 0.65 * L); // no grid: fall back to onsets
-          punch += (target * beatW - punch) * Math.min(1, (dtL || 16) / (target * beatW > punch ? 18 : 150));
+          // punch stays STRONG wherever a grid exists - a linear fade made mid
+          // tracks (90210) half-hearted, which read as "mid". concave curve:
+          // full-ish knock above the gate, zero below it.
+          var punchW = beatW <= 0.08 ? 0 : 0.45 + 0.55 * beatW;
+          punch += (target * punchW - punch) * Math.min(1, (dtL || 16) / (target * punchW > punch ? 18 : 150));
           // slow breathing channel for envelope-led tracks (~700ms follow of the meter)
           breathe += (disp - breathe) * Math.min(1, (dtL || 16) / 700);
           // the pump crossfades on track character: grid tracks knock (punch,
@@ -280,9 +286,13 @@
             riseFull = Math.max(riseGate + 4, rises[Math.floor(rises.length * 0.9)]);
           }
           var ch = a && a.character;
-          if (ch && typeof ch.beatSalience === "number") {
-            // live range: 1.0 = no beat preference, ~1.45+ = hard grid
-            beatW = Math.max(0, Math.min(1, (ch.beatSalience - 1.05) / 0.37));
+          if (ch && (typeof ch.beatSalienceDb === "number" || typeof ch.beatSalience === "number")) {
+            // dB axis (characterVer 2) separates better than the ratio: 0.4dB
+            // (All Too Well) .. 4.2dB (goosebumps). fall back to the ratio map
+            // for ver-1 cached payloads.
+            beatW = typeof ch.beatSalienceDb === "number"
+              ? Math.max(0, Math.min(1, (ch.beatSalienceDb - 0.3) / 1.8))
+              : Math.max(0, Math.min(1, (ch.beatSalience - 1.05) / 0.37));
             atkScale = Math.max(0.6, Math.min(1.5, (ch.attackDepth || 9) / 9));
           } else { beatW = 0.75; atkScale = 1; }
           breathe = 0;
