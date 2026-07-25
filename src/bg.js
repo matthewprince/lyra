@@ -111,8 +111,12 @@
       // real per-hit levels (start -> max at the actual attack offset -> next
       // segment). synthetic beat-timestamp flashes strobed; levels pump.
       var anSegs = null, anBeats = null, beatIdx = 0, anEnergy = null, anStep = 250;
-      var segIdx = 0, lastPos = -1, disp = 0, punch = 0, dbLow = -30, dbHigh = -8;
+      var segIdx = 0, lastPos = -1, disp = 0, punch = 0, breathe = 0, dbLow = -30, dbHigh = -8;
       var riseGate = 4, riseFull = 15; // per-track (p35/p90 of attack rises)
+      // track character (server /v2/analysis "character" block, characterVer 1):
+      // beatW: 0 = breathe with the envelope (All Too Well), 1 = knock on the grid
+      // (goosebumps). atkScale: how hard hits should land (SICKO MODE 13.5dB -> 1.5x)
+      var beatW = 0.75, atkScale = 1;
       var wScale = -1, wWash = -1, wLay = -1;
 
       function levelAt(pos) {
@@ -216,10 +220,12 @@
               }
             }
           } else target = onset * (0.35 + 0.65 * L); // no grid: fall back to onsets
-          punch += (target - punch) * Math.min(1, (dtL || 16) / (target > punch ? 18 : 150));
-          // the pump: punch thumps hard, the meter breathes softly underneath.
-          // ^1.3 not ^2: typical hits live at punch 0.4-0.6 and squaring buried them
-          sc = Math.round((1 + 0.22 * Math.pow(punch, 1.3) + 0.05 * disp * disp) * 500) / 500;
+          punch += (target * beatW - punch) * Math.min(1, (dtL || 16) / (target * beatW > punch ? 18 : 150));
+          // slow breathing channel for envelope-led tracks (~700ms follow of the meter)
+          breathe += (disp - breathe) * Math.min(1, (dtL || 16) / 700);
+          // the pump crossfades on track character: grid tracks knock (punch,
+          // scaled by how hard this track's hits land), envelope tracks swell
+          sc = Math.round((1 + 0.22 * atkScale * Math.pow(punch, 1.3) + (0.05 + 0.1 * (1 - beatW)) * breathe * breathe) * 500) / 500;
         }
         lastPos = pos;
         if (sc !== wScale && curGroup) { wScale = sc; curGroup.style.scale = sc === 1 ? "" : String(sc); }
@@ -230,7 +236,7 @@
         if (curLayers && dtL > 0) {
           holder.classList.add("lyra-bg-live");
           var e2 = energyAt(pos);
-          var flow = 0.25 + 0.95 * e2 + 2.2 * Math.pow(punch, 1.3) + 0.8 * disp * disp; // idle .. ~3.5x on hits
+          var flow = 0.25 + 0.95 * e2 + 2.2 * Math.pow(punch, 1.3) + (0.8 + 0.9 * (1 - beatW)) * disp * disp; // idle .. ~3.5x on hits; envelope tracks flow harder instead of knocking
           for (var li = 0; li < curLayers.length; li++) {
             var Ly = curLayers[li];
             Ly.ang += Ly.vel * Ly.dir * flow * (dtL / 1000);
@@ -272,7 +278,15 @@
             var rises = anSegs.map(function (s) { return s[4] - s[3]; }).sort(function (x, y) { return x - y; });
             riseGate = Math.max(3, rises[Math.floor(rises.length * 0.35)]);
             riseFull = Math.max(riseGate + 4, rises[Math.floor(rises.length * 0.9)]);
-          } else if (curGroup) { curGroup.style.scale = ""; energyEl.style.opacity = ""; }
+          }
+          var ch = a && a.character;
+          if (ch && typeof ch.beatSalience === "number") {
+            // live range: 1.0 = no beat preference, ~1.45+ = hard grid
+            beatW = Math.max(0, Math.min(1, (ch.beatSalience - 1.05) / 0.37));
+            atkScale = Math.max(0.6, Math.min(1.5, (ch.attackDepth || 9) / 9));
+          } else { beatW = 0.75; atkScale = 1; }
+          breathe = 0;
+          if (!anSegs && !anEnergy && curGroup) { curGroup.style.scale = ""; energyEl.style.opacity = ""; }
         },
         pulse: pulse,
         setCover: function (url, accent) {
