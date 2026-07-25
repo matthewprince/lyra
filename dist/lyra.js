@@ -1,4 +1,4 @@
-/* Lyra lyric renderer - built 2026-07-25T05:55:08Z */
+/* Lyra lyric renderer - built 2026-07-25T06:09:34Z */
 // Lyra parsers - TTML / lyrics-JSON / LRC in, one internal model out.
 // All times in MILLISECONDS (upstream JSON is seconds, converted here).
 //
@@ -1791,8 +1791,9 @@
       // audio-reactive state. the driver is the SEGMENT loudness envelope - the
       // real per-hit levels (start -> max at the actual attack offset -> next
       // segment). synthetic beat-timestamp flashes strobed; levels pump.
-      var anSegs = null, anEnergy = null, anStep = 250;
-      var segIdx = 0, lastPos = -1, disp = 0, dbLow = -30, dbHigh = -8;
+      var anSegs = null, anBeats = null, beatIdx = 0, anEnergy = null, anStep = 250;
+      var segIdx = 0, lastPos = -1, disp = 0, punch = 0, dbLow = -30, dbHigh = -8;
+      var riseGate = 4, riseFull = 15; // per-track (p35/p90 of attack rises)
       var wScale = -1, wWash = -1, wLay = -1;
 
       function levelAt(pos) {
@@ -1866,13 +1867,40 @@
         var dtL = lastPos < 0 ? 0 : Math.max(0, Math.min(100, pos - lastPos));
         var sc = 1;
         if (anSegs) {
-          // level-meter ballistics on the real loudness envelope: instant-ish
-          // attack, slow release. motion pumps WITH the audio; nothing strobes.
+          // level meter (slow body of the sound)
           var L = (levelAt(pos) - dbLow) / Math.max(1, dbHigh - dbLow);
           L = L < 0 ? 0 : L > 1 ? 1 : L;
           disp += (L - disp) * Math.min(1, (dtL || 16) / (L > disp ? 28 : 220));
-          // the pump: scale rides the meter (quadratic keeps quiet parts still)
-          sc = Math.round((1 + 0.14 * disp * disp) * 500) / 500;
+          // onset strength from the current segment's attack rise (bonus channel)
+          var s = anSegs[segIdx], onset = 0;
+          if (s && pos >= s[0]) {
+            var rise = s[4] - s[3];
+            if (rise > riseGate && pos <= s[0] + Math.max(60, (s[5] || 0) + 90)) {
+              onset = Math.min(1, (rise - riseGate) / Math.max(2, riseFull - riseGate));
+            }
+          }
+          // the thump is BEAT-GRID locked (the stable thing you feel), sized by
+          // the level meter, boosted when a real onset coincides. attack-rise
+          // alone missed trap: 808s glide, they don't spike broadband loudness.
+          var target = 0;
+          if (anBeats) {
+            if (pos < lastPos - 400) beatIdx = 0;
+            while (beatIdx + 1 < anBeats.length && anBeats[beatIdx + 1][0] <= pos) beatIdx++;
+            var b = anBeats[beatIdx];
+            if (b && pos >= b[0]) {
+              var bp = (pos - b[0]) / Math.max(1, b[1]);
+              if (bp < 1) {
+                var br = 1 - bp;
+                target = br * Math.sqrt(br) * (0.22 + 0.78 * disp) * (1 + 0.6 * onset);
+                var cap = 0.3 + 0.7 * disp; // loudness caps the thump: quiet can't slam
+                if (target > cap) target = cap;
+              }
+            }
+          } else target = onset * (0.35 + 0.65 * L); // no grid: fall back to onsets
+          punch += (target - punch) * Math.min(1, (dtL || 16) / (target > punch ? 18 : 150));
+          // the pump: punch thumps hard, the meter breathes softly underneath.
+          // ^1.3 not ^2: typical hits live at punch 0.4-0.6 and squaring buried them
+          sc = Math.round((1 + 0.22 * Math.pow(punch, 1.3) + 0.05 * disp * disp) * 500) / 500;
         }
         lastPos = pos;
         if (sc !== wScale && curGroup) { wScale = sc; curGroup.style.scale = sc === 1 ? "" : String(sc); }
@@ -1883,12 +1911,14 @@
         if (curLayers && dtL > 0) {
           holder.classList.add("lyra-bg-live");
           var e2 = energyAt(pos);
-          var flow = 0.25 + 0.95 * e2 + 1.6 * disp * disp; // 0.25x idle .. ~2.8x on hits
+          var flow = 0.25 + 0.95 * e2 + 2.2 * Math.pow(punch, 1.3) + 0.8 * disp * disp; // idle .. ~3.5x on hits
           for (var li = 0; li < curLayers.length; li++) {
             var Ly = curLayers[li];
             Ly.ang += Ly.vel * Ly.dir * flow * (dtL / 1000);
             var aq = Math.round(Ly.ang * 10) / 10;
-            var t = "rotate(" + aq + "deg) translate(" + Ly.orb + "vmax,0) scale(" + Ly.sc + ")";
+            // blobs also thump in SIZE on punches - the per-hit body the pump alone lacked
+            var scEff = Ly.blob ? Math.round(Ly.sc * (1 + 0.14 * punch) * 200) / 200 : Ly.sc;
+            var t = "rotate(" + aq + "deg) translate(" + Ly.orb + "vmax,0) scale(" + scEff + ")";
             if (t !== Ly._t) { Ly._t = t; Ly.el.style.transform = t; }
           }
         }
@@ -1909,14 +1939,20 @@
       return {
         setAnalysis: function (a) {
           anSegs = (a && a.segments && a.segments.length && a.segments) || null;
+          anBeats = (a && a.beats && a.beats.length && a.beats) || null;
           anEnergy = (a && a.energy && a.energy.values) || null;
           anStep = (a && a.energy && a.energy.stepMs) || 250;
-          segIdx = 0; lastPos = -1; disp = 0; wScale = -1; wWash = -1; wLay = -1;
+          segIdx = 0; beatIdx = 0; lastPos = -1; disp = 0; punch = 0; wScale = -1; wWash = -1; wLay = -1;
           if (anSegs) {
             // normalize per-track: p15..p92 of the segment peaks define the meter range
             var peaks = anSegs.map(function (s) { return s[4]; }).sort(function (x, y) { return x - y; });
             dbLow = peaks[Math.floor(peaks.length * 0.15)];
             dbHigh = Math.max(dbLow + 6, peaks[Math.floor(peaks.length * 0.92)]);
+            // and the punch gate: p35..p90 of attack rises, so only THIS track's
+            // proper hits thump (trap is wall-to-wall onsets, ballads are sparse)
+            var rises = anSegs.map(function (s) { return s[4] - s[3]; }).sort(function (x, y) { return x - y; });
+            riseGate = Math.max(3, rises[Math.floor(rises.length * 0.35)]);
+            riseFull = Math.max(riseGate + 4, rises[Math.floor(rises.length * 0.9)]);
           } else if (curGroup) { curGroup.style.scale = ""; energyEl.style.opacity = ""; }
         },
         pulse: pulse,
