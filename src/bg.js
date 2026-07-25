@@ -83,27 +83,29 @@
       scrim.className = "lyra-bg-scrim";
       var curGroup = null, curLayers = null, token = 0, destroyed = false;
 
-      // audio-reactive state (fed by setAnalysis, driven by pulse per frame)
-      var anBars = null, anBeats = null, anEnergy = null, anStep = 250;
-      var lastPos = -1;
+      // audio-reactive state. the driver is the SEGMENT loudness envelope - the
+      // real per-hit levels (start -> max at the actual attack offset -> next
+      // segment). synthetic beat-timestamp flashes strobed; levels pump.
+      var anSegs = null, anEnergy = null, anStep = 250;
+      var segIdx = 0, lastPos = -1, disp = 0, dbLow = -30, dbHigh = -8;
       var wScale = -1, wWash = -1, wLay = -1;
 
-      function markerEnv(list, idxRef, pos, power) {
-        // sharp attack at the marker, decay across its duration. confidence only
-        // GATES (junk markers skipped) - scaling by it buried the whole effect,
-        // steady grooves ride at conf 0.1-0.4
-        var i = idxRef.i;
-        if (pos < lastPos - 400) i = 0;
-        while (i + 1 < list.length && list[i + 1][0] <= pos) i++;
-        idxRef.i = i;
-        var m = list[i];
-        if (!m || pos < m[0] || (m[2] || 1) < 0.1) return 0;
-        var p = (pos - m[0]) / Math.max(1, m[1]);
-        if (p >= 1) return 0;
-        var r = 1 - p;
-        return power === 3 ? r * r * r : r * r;
+      function levelAt(pos) {
+        // piecewise loudness in dB from columnar segments
+        // [startMs, durMs, conf, loudStart, loudMax, attackOffsetMs]
+        if (pos < lastPos - 400) segIdx = 0; // seek back: rescan
+        while (segIdx + 1 < anSegs.length && anSegs[segIdx + 1][0] <= pos) segIdx++;
+        var s = anSegs[segIdx];
+        if (!s || pos < s[0]) return dbLow;
+        var t = pos - s[0], atk = Math.max(1, s[5] || 1), db;
+        if (t <= atk) db = s[3] + (s[4] - s[3]) * (t / atk);
+        else {
+          var nl = segIdx + 1 < anSegs.length ? anSegs[segIdx + 1][3] : s[3];
+          var rel = Math.max(1, s[1] - atk);
+          db = s[4] + (nl - s[4]) * Math.min(1, (t - atk) / rel);
+        }
+        return db;
       }
-      var barRef = { i: 0 }, beatRef = { i: 0 };
 
       function show(art) {
         if (destroyed) return;
@@ -136,20 +138,22 @@
       }
 
       function pulse(pos) {
-        if (destroyed || (!anBars && !anBeats)) return;
-        var barEnv = anBars ? markerEnv(anBars, barRef, pos, 2) : 0;
-        var beatEnv = anBeats ? markerEnv(anBeats, beatRef, pos, 3) : 0;
+        if (destroyed || !anSegs) return;
+        // level-meter ballistics on the real loudness envelope: instant-ish
+        // attack, slow release. motion pumps WITH the audio; nothing strobes.
+        var dt = lastPos < 0 ? 16 : Math.max(0, Math.min(100, pos - lastPos));
+        var L = (levelAt(pos) - dbLow) / Math.max(1, dbHigh - dbLow);
+        L = L < 0 ? 0 : L > 1 ? 1 : L;
         lastPos = pos;
-        var e = energyAt(pos);
-        // breath: bars carry a real 5% swell, beats a small kick on top - both
-        // weighted by how loud the song is right now
-        var sc = Math.round((1 + (0.05 * barEnv + 0.012 * beatEnv) * (0.3 + 0.7 * e)) * 500) / 500;
+        disp += (L - disp) * Math.min(1, dt / (L > disp ? 28 : 220));
+        // the pump: scale rides the meter (quadratic keeps quiet parts still)
+        var sc = Math.round((1 + 0.1 * disp * disp) * 500) / 500;
         if (sc !== wScale && curGroup) { wScale = sc; curGroup.style.scale = sc === 1 ? "" : String(sc); }
-        // brightness: energy sets the floor, every beat flashes above it. this is
-        // the channel that actually reads as "reactive" on a blurred field
-        var wash = Math.round(Math.min(0.85, e * (0.18 + 0.5 * e) + 0.4 * e * beatEnv) * 50) / 50;
+        // luminance strictly follows the SLOW energy curve (no per-hit light)
+        var e = energyAt(pos);
+        var wash = Math.round(Math.min(0.5, e * (0.12 + 0.35 * e)) * 50) / 50;
         if (wash !== wWash) { wWash = wash; energyEl.style.opacity = wash <= 0 ? "" : String(wash); }
-        var lm = Math.round(Math.min(1, 0.55 + 0.45 * e + 0.18 * e * beatEnv) * 50) / 50;
+        var lm = Math.round(Math.min(1, 0.58 + 0.42 * e) * 50) / 50;
         if (lm !== wLay && curLayers) {
           wLay = lm;
           for (var i = 0; i < curLayers.length; i++)
@@ -159,12 +163,16 @@
 
       return {
         setAnalysis: function (a) {
-          anBars = (a && a.bars && a.bars.length && a.bars) || null;
-          anBeats = (a && a.beats && a.beats.length && a.beats) || null;
+          anSegs = (a && a.segments && a.segments.length && a.segments) || null;
           anEnergy = (a && a.energy && a.energy.values) || null;
           anStep = (a && a.energy && a.energy.stepMs) || 250;
-          barRef.i = 0; beatRef.i = 0; lastPos = -1; wScale = -1; wWash = -1; wLay = -1;
-          if (!anBars && !anBeats && curGroup) { curGroup.style.scale = ""; energyEl.style.opacity = ""; }
+          segIdx = 0; lastPos = -1; disp = 0; wScale = -1; wWash = -1; wLay = -1;
+          if (anSegs) {
+            // normalize per-track: p15..p92 of the segment peaks define the meter range
+            var peaks = anSegs.map(function (s) { return s[4]; }).sort(function (x, y) { return x - y; });
+            dbLow = peaks[Math.floor(peaks.length * 0.15)];
+            dbHigh = Math.max(dbLow + 6, peaks[Math.floor(peaks.length * 0.92)]);
+          } else if (curGroup) { curGroup.style.scale = ""; energyEl.style.opacity = ""; }
         },
         pulse: pulse,
         setCover: function (url, accent) {

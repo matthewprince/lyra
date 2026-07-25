@@ -1250,7 +1250,7 @@
       remeasure: queueMeasure,
       setCover: function (url, accent) { if (bg && bg.setCover) bg.setCover(url, accent); else pendingCover = [url, accent]; },
       setAnalysis: function (a) {
-        var ok = !!(a && a.available !== false && ((a.bars && a.bars.length) || (a.beats && a.beats.length)));
+        var ok = !!(a && a.available !== false && ((a.segments && a.segments.length) || (a.energy && a.energy.values && a.energy.values.length)));
         analysisOn = ok;
         if (bg && bg.setAnalysis) bg.setAnalysis(ok ? a : null);
         // interlude dots breathe at the song's tempo (4 beats per cycle)

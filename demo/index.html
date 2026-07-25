@@ -190,7 +190,7 @@
       setTrack(tn, ta, model);
       // audio-reactive background: fetch the analysis too (best-effort)
       lyra.setAnalysis(null);
-      var au = "https://api.qobuzify.app/v2/analysis?name=" + encodeURIComponent(name) + "&artist=" + encodeURIComponent(artist);
+      var au = "https://api.qobuzify.app/v2/analysis?fields=energy,segments&name=" + encodeURIComponent(name) + "&artist=" + encodeURIComponent(artist);
       fetch(au).then(function (r) { return r.json(); }).then(function (aj) {
         if (aj && aj.ok && aj.analysis && aj.analysis.available) lyra.setAnalysis(aj.analysis);
       }).catch(function () {});
