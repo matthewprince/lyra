@@ -1250,6 +1250,7 @@
       remeasure: queueMeasure,
       setCover: function (url, accent) { if (bg && bg.setCover) bg.setCover(url, accent); else pendingCover = [url, accent]; },
       setAnalysis: function (a) {
+        if (a && a.analysis) a = a.analysis; // accept the whole /v2/analysis response too
         var ok = !!(a && a.available !== false && ((a.segments && a.segments.length) || (a.energy && a.energy.values && a.energy.values.length)));
         analysisOn = ok;
         if (bg && bg.setAnalysis) bg.setAnalysis(ok ? a : null);

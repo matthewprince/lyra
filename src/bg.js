@@ -138,16 +138,19 @@
       }
 
       function pulse(pos) {
-        if (destroyed || !anSegs) return;
-        // level-meter ballistics on the real loudness envelope: instant-ish
-        // attack, slow release. motion pumps WITH the audio; nothing strobes.
-        var dt = lastPos < 0 ? 16 : Math.max(0, Math.min(100, pos - lastPos));
-        var L = (levelAt(pos) - dbLow) / Math.max(1, dbHigh - dbLow);
-        L = L < 0 ? 0 : L > 1 ? 1 : L;
+        if (destroyed || (!anSegs && !anEnergy)) return; // degrade: energy-only data still animates
+        var sc = 1;
+        if (anSegs) {
+          // level-meter ballistics on the real loudness envelope: instant-ish
+          // attack, slow release. motion pumps WITH the audio; nothing strobes.
+          var dt = lastPos < 0 ? 16 : Math.max(0, Math.min(100, pos - lastPos));
+          var L = (levelAt(pos) - dbLow) / Math.max(1, dbHigh - dbLow);
+          L = L < 0 ? 0 : L > 1 ? 1 : L;
+          disp += (L - disp) * Math.min(1, dt / (L > disp ? 28 : 220));
+          // the pump: scale rides the meter (quadratic keeps quiet parts still)
+          sc = Math.round((1 + 0.14 * disp * disp) * 500) / 500;
+        }
         lastPos = pos;
-        disp += (L - disp) * Math.min(1, dt / (L > disp ? 28 : 220));
-        // the pump: scale rides the meter (quadratic keeps quiet parts still)
-        var sc = Math.round((1 + 0.1 * disp * disp) * 500) / 500;
         if (sc !== wScale && curGroup) { wScale = sc; curGroup.style.scale = sc === 1 ? "" : String(sc); }
         // luminance strictly follows the SLOW energy curve (no per-hit light)
         var e = energyAt(pos);
