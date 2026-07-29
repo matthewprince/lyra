@@ -254,7 +254,8 @@
     // stats for perf verification
     var stat = { frames: 0, styleWrites: 0, lastMs: 0, worstMs: 0 };
 
-    var nativeRAF = global.__QZ_SL_nativeRAF ||
+    // hosts that patch requestAnimationFrame can hand us the real one here
+    var nativeRAF = global.__LYRA_RAF__ ||
       (window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : function (f) { return setTimeout(function () { f(performance.now()); }, 16); });
 
     // scaffold

@@ -1,4 +1,4 @@
-/* Lyra lyric renderer - built 2026-07-25T06:29:08Z */
+/* Lyra lyric renderer - built 2026-07-29T22:12:22Z */
 // Lyra parsers - TTML / lyrics-JSON / LRC in, one internal model out.
 // All times in MILLISECONDS (upstream JSON is seconds, converted here).
 //
@@ -664,7 +664,8 @@
     // stats for perf verification
     var stat = { frames: 0, styleWrites: 0, lastMs: 0, worstMs: 0 };
 
-    var nativeRAF = global.__QZ_SL_nativeRAF ||
+    // hosts that patch requestAnimationFrame can hand us the real one here
+    var nativeRAF = global.__LYRA_RAF__ ||
       (window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : function (f) { return setTimeout(function () { f(performance.now()); }, 16); });
 
     // scaffold
@@ -1585,10 +1586,13 @@
 
       // clock smoothing + jump detection (handles coarse position sources)
       if (!playing) {
-        if (Math.abs(raw - est) > 2) {
-          var big = Math.abs(raw - est) > 900;
+        // 80ms, not 2ms: the paused clock can carry a host-supplied offset (Qobuzify's autoOffsetMs)
+        // whose periodic re-samples step by a few ms, and every step over the threshold runs a full
+        // hardPass state pass. Sub-perceptual jitter must not repaint the whole view; a real paused
+        // scrub still clears 80ms by orders of magnitude. And no entrance replay while paused: lyrics
+        // re-rippling with no music playing reads as a glitch, not a transition.
+        if (Math.abs(raw - est) > 80) {
           est = raw; resyncSoft(raw);
-          if (big) replayEntrance();
         }
       } else {
         est += dt;
